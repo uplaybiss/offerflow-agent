@@ -10,7 +10,7 @@ from typing import Any, Protocol
 from langchain.agents import create_agent
 from langchain_openai import ChatOpenAI
 
-from agent.tools import CAREER_TOOLS
+from agent.tools import CAREER_TOOL_CATALOG, CAREER_TOOL_NAMES
 from core.errors import ExternalServiceError
 
 
@@ -56,10 +56,12 @@ class LangChainCareerAgentRunner:
         self._graphs: dict[str, Any] = {}
 
     def _graph_for(self, settings: dict[str, Any]) -> Any:
+        enabled_tools = self._enabled_tool_names(settings)
         effective = {
             "model_name": str(settings.get("model_name") or self.model_name),
             "max_retries": max(0, min(int(settings.get("max_retries", self.max_retries)), 5)),
             "temperature": max(0.0, min(float(settings.get("temperature", 0)), 1.0)),
+            "enabled_tools": enabled_tools,
         }
         cache_key = hashlib.sha256(
             json.dumps(effective, sort_keys=True, separators=(",", ":")).encode("utf-8")
@@ -75,9 +77,27 @@ class LangChainCareerAgentRunner:
                 max_retries=effective["max_retries"],
                 extra_body={"enable_thinking": False},
             )
-            graph = create_agent(model=model, tools=CAREER_TOOLS, system_prompt=self._prompt)
+            graph = create_agent(
+                model=model,
+                tools=[CAREER_TOOL_CATALOG[name] for name in enabled_tools],
+                system_prompt=self._prompt,
+            )
             self._graphs[cache_key] = graph
         return graph
+
+    @staticmethod
+    def _enabled_tool_names(settings: dict[str, Any]) -> list[str]:
+        configured = settings.get("enabled_tools", list(CAREER_TOOL_NAMES))
+        if not isinstance(configured, list):
+            raise ValueError("enabled_tools must be a list")
+        names = list(dict.fromkeys(str(item) for item in configured))
+        if not names or any(name not in CAREER_TOOL_CATALOG for name in names):
+            raise ValueError("enabled_tools contains unknown or empty tool selection")
+        return names
+
+    def tools_for(self, settings: dict[str, Any]) -> list[str]:
+        """Expose the effective schema names for deterministic contract tests."""
+        return self._enabled_tool_names(settings)
 
     @staticmethod
     def _content(message: Any) -> str:

@@ -2,7 +2,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { api, formatTime } from '../api'
 import StatusBadge from '../components/StatusBadge.vue'
-import type { AgentCapabilities, AgentTrace, Application, Interview, Job, PendingAction, Task } from '../types'
+import type { AgentCapabilities, AgentMemory, AgentTrace, Application, Interview, Job, PendingAction, Task } from '../types'
 
 type Message = { role: 'user' | 'assistant'; content: string }
 
@@ -29,17 +29,23 @@ const toolsUsed = computed(() => trace.value?.events.filter(item => item.event_t
 
 async function load() {
   try {
-    const [capability, jobData, applicationData, interviewData, taskData, actionData] = await Promise.all([
+    const [capability, jobData, applicationData, interviewData, taskData, actionData, memoryData] = await Promise.all([
       api.get<AgentCapabilities>('/api/agent/capabilities'),
       api.get<{ items: Job[] }>('/api/jobs'),
       api.get<{ items: Application[] }>('/api/applications'),
       api.get<{ items: Interview[] }>('/api/interviews'),
       api.get<{ items: Task[] }>('/api/tasks'),
       api.get<{ items: PendingAction[] }>('/api/pending-actions'),
+      api.get<{ memory: AgentMemory | null }>(`/api/agent/memory/${encodeURIComponent(chatId.value)}`),
     ])
     capabilities.value = capability
     jobs.value = jobData.items; applications.value = applicationData.items
     interviews.value = interviewData.items; tasks.value = taskData.items; pending.value = actionData.items
+    const memory = memoryData.memory
+    currentJobId.value = memory && jobs.value.some(item => item.job_id === memory.current_job_id && item.effective_status !== 'ARCHIVED') ? memory.current_job_id : ''
+    currentApplicationId.value = memory && applications.value.some(item => item.application_id === memory.current_application_id) ? memory.current_application_id : ''
+    currentInterviewId.value = memory && interviews.value.some(item => item.round_id === memory.current_interview_id) ? memory.current_interview_id : ''
+    currentTaskId.value = memory && tasks.value.some(item => item.task_id === memory.current_task_id) ? memory.current_task_id : ''
     error.value = ''
   } catch (reason) { error.value = (reason as Error).message }
 }
@@ -47,7 +53,7 @@ async function load() {
 async function send() {
   const message = input.value.trim()
   if (!message || sending.value) return
-  const history = messages.value.slice(-12)
+  const history = messages.value.slice(-20)
   messages.value.push({ role: 'user', content: message }, { role: 'assistant', content: '' })
   const assistantIndex = messages.value.length - 1
   input.value = ''; sending.value = true; error.value = ''; trace.value = null
@@ -70,8 +76,11 @@ async function send() {
 
 async function confirm(action: PendingAction) {
   try {
-    const response = await api.post<{ result: { to_status: string }; trace: AgentTrace }>(`/api/pending-actions/${action.action_id}/confirm`)
-    messages.value.push({ role: 'assistant', content: `已按你的确认完成投递状态更新：${response.result.to_status}。` })
+    const response = await api.post<{ result: { action_type: string; to_status: string; next_round_id?: string; task_id?: string }; trace: AgentTrace }>(`/api/pending-actions/${action.action_id}/confirm`)
+    const text = response.result.action_type === 'INTERVIEW_PROGRESSION'
+      ? `已按你的确认完成当前面试，并创建下一轮面试与准备任务。`
+      : `已按你的确认完成投递状态更新：${response.result.to_status}。`
+    messages.value.push({ role: 'assistant', content: text })
     trace.value = response.trace
     await load()
   } catch (reason) { error.value = (reason as Error).message }
@@ -86,6 +95,7 @@ function newChat() {
   chatId.value = `chat:${crypto.randomUUID()}`
   localStorage.setItem('offerflow-agent-chat-id', chatId.value)
   messages.value = [{ role: 'assistant', content: '新对话已开始。你可以问我未投递岗位、投递进度、近期待办或技能缺口。' }]
+  currentJobId.value = ''; currentApplicationId.value = ''; currentInterviewId.value = ''; currentTaskId.value = ''
   trace.value = null
 }
 
@@ -112,7 +122,7 @@ onMounted(load)
     </div>
 
     <aside class="agent-side stack">
-      <section class="panel"><div class="panel-title"><div><h2>待确认动作</h2><p>不点击确认，Application 不会变化。</p></div><span>{{ activePending.length }}</span></div><p v-if="!activePending.length" class="muted">当前没有待确认动作。</p><article v-for="action in activePending" :key="action.action_id" class="confirmation-card"><div><StatusBadge :value="action.payload.target_status" /><small>{{ formatTime(action.expires_at) }} 过期</small></div><strong>{{ action.payload.application_id }}</strong><p>目标状态：{{ action.payload.target_status }}<br />下一步：{{ action.payload.next_action || '未填写' }}</p><div><button class="danger" @click="cancel(action)">取消</button><button class="primary" @click="confirm(action)">确认并执行</button></div></article></section>
+      <section class="panel"><div class="panel-title"><div><h2>待确认动作</h2><p>不点击确认，任何组合写入都不会发生。</p></div><span>{{ activePending.length }}</span></div><p v-if="!activePending.length" class="muted">当前没有待确认动作。</p><article v-for="action in activePending" :key="action.action_id" class="confirmation-card"><div><StatusBadge :value="action.action_type === 'INTERVIEW_PROGRESSION' ? 'INTERVIEW' : (action.payload.target_status || '')" /><small>{{ formatTime(action.expires_at) }} 过期</small></div><strong>{{ action.payload.application_id }}</strong><p v-if="action.action_type === 'INTERVIEW_PROGRESSION'">完成轮次：{{ action.payload.current_round_id }}<br />下一轮：{{ action.payload.next_round_title }} · {{ formatTime(action.payload.next_round_scheduled_at || '') }}<br />准备任务：{{ action.payload.task_title }} · {{ formatTime(action.payload.task_due_at || '') }}</p><p v-else>目标状态：{{ action.payload.target_status }}<br />下一步：{{ action.payload.next_action || '未填写' }}</p><div><button class="danger" @click="cancel(action)">取消</button><button class="primary" @click="confirm(action)">确认并执行</button></div></article></section>
       <section class="panel"><div class="panel-title"><div><h2>Trace 摘要</h2><p>仅记录 allowlist 元数据，不保存消息、简历或完整 JD。</p></div></div><p v-if="!trace" class="muted">完成一次请求后显示。</p><template v-else><code>{{ trace.trace_id }}</code><div class="trace-meta"><span>{{ trace.status }}</span><span>{{ trace.total_ms }} ms</span><span>{{ trace.input_tokens + trace.output_tokens }} tokens</span></div><div v-for="item in toolsUsed" :key="`${item.sequence}-${item.tool_name}`" class="trace-row"><strong>{{ item.tool_name }}</strong><span>{{ item.risk }} · {{ item.status }} · {{ item.duration_ms }} ms</span></div></template></section>
     </aside>
   </section>

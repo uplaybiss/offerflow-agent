@@ -5,6 +5,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, Query, Request
 
 from api.dependencies import candidate_for, current_user, services
+from api.schemas import JobCreateBody, JobUpdateBody, body_dict
 
 
 router = APIRouter(prefix="/api/jobs", tags=["jobs"])
@@ -26,9 +27,9 @@ def list_jobs(
 
 
 @router.post("", status_code=201)
-async def create_job(request: Request, user: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
+def create_job(body: JobCreateBody, request: Request, user: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
     candidate = candidate_for(request, user)
-    return {"job": services(request).jobs.create(candidate["candidate_id"], await request.json())}
+    return {"job": services(request).jobs.create(candidate["candidate_id"], body_dict(body))}
 
 
 @router.get("/{job_id}")
@@ -38,6 +39,6 @@ def get_job(job_id: str, request: Request, user: dict[str, Any] = Depends(curren
 
 
 @router.patch("/{job_id}")
-async def update_job(job_id: str, request: Request, user: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
+def update_job(job_id: str, body: JobUpdateBody, request: Request, user: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
     candidate = candidate_for(request, user)
-    return {"job": services(request).jobs.update(candidate["candidate_id"], job_id, await request.json())}
+    return {"job": services(request).jobs.update(candidate["candidate_id"], job_id, body_dict(body))}

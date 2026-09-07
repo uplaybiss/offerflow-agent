@@ -8,7 +8,7 @@ from typing import Any
 
 from career.services.jobs import JobService
 from core.errors import ValidationError
-from matching.dictionary import DICTIONARY_VERSION, SkillDictionary
+from matching.dictionary import DICTIONARY_VERSION, LanguageDictionary, SkillDictionary
 from parsing.llm import LlmClient
 
 
@@ -54,6 +54,7 @@ class MatchingService:
     def __init__(self, jobs: JobService, dictionary: SkillDictionary, llm: LlmClient) -> None:
         self.jobs = jobs
         self.dictionary = dictionary
+        self.languages = LanguageDictionary()
         self.llm = llm
 
     def config(self) -> dict[str, Any]:
@@ -65,6 +66,7 @@ class MatchingService:
             "match_required_coverage": match,
             "disclaimer": DISCLAIMER,
             "skill_dictionary": self.dictionary.summary(),
+            "language_dictionary": self.languages.summary(),
         }
 
     @staticmethod
@@ -73,6 +75,21 @@ class MatchingService:
 
     def _hard_conditions(self, candidate: dict[str, Any], job: dict[str, Any]) -> list[dict[str, Any]]:
         checks: list[dict[str, Any]] = []
+        effective_status = str(job.get("effective_status") or job.get("status") or "")
+        availability_failed = effective_status in {"EXPIRED", "CLOSED"}
+        availability_evidence = {
+            "ACTIVE": "岗位当前可用，继续比较其他条件",
+            "EXPIRED": "岗位已过期，不再推荐",
+            "CLOSED": "岗位已关闭，不再推荐",
+            "ARCHIVED": "ARCHIVED 是用户管理状态，不作为能力匹配失败条件",
+        }.get(effective_status, "岗位可用状态未知")
+        checks.append(self._check(
+            "job_availability",
+            "FAIL" if availability_failed else ("PASS" if effective_status in {"ACTIVE", "ARCHIVED"} else "UNKNOWN"),
+            effective_status or None,
+            "ACTIVE or user-managed ARCHIVED",
+            availability_evidence,
+        ))
         expired = job["effective_status"] == "EXPIRED"
         checks.append(self._check(
             "deadline", "FAIL" if expired else ("UNKNOWN" if not job["deadline"] else "PASS"),
@@ -125,14 +142,29 @@ class MatchingService:
         else:
             checks.append(self._check("degree", "UNKNOWN", candidate.get("degree") or None, required_degree or None, "岗位或候选人缺少可确定的学历层级"))
 
-        required_languages = _text_set(hard.get("required_languages"))
-        candidate_languages = _text_set(preferences.get("languages"))
-        if required_languages and candidate_languages:
-            candidate_language_keys = {_normalized_text(item) for item in candidate_languages}
-            missing_languages = [item for item in required_languages if _normalized_text(item) not in candidate_language_keys]
-            checks.append(self._check("languages", "FAIL" if missing_languages else "PASS", candidate_languages, required_languages, f"明确缺少：{', '.join(missing_languages)}" if missing_languages else "明确语言要求均命中"))
+        required_languages = self.languages.normalize_many(_text_set(hard.get("required_languages")))
+        resume = candidate.get("current_resume_parsed") if isinstance(candidate.get("current_resume_parsed"), dict) else {}
+        candidate_language_facts = [
+            *_text_set(preferences.get("languages")),
+            *_text_set(resume.get("languages")),
+        ]
+        candidate_languages = self.languages.normalize_many(candidate_language_facts)
+        required_keys = {str(item["canonical_language"]) for item in required_languages}
+        candidate_keys = {str(item["canonical_language"]) for item in candidate_languages}
+        if required_keys:
+            missing_keys = sorted(required_keys - candidate_keys)
+            checks.append(self._check(
+                "languages",
+                "FAIL" if missing_keys else "PASS",
+                candidate_languages or None,
+                required_languages,
+                f"明确缺少 canonical language：{', '.join(missing_keys)}" if missing_keys else "偏好与已确认简历语言事实合并后，明确语言要求均命中",
+            ))
         else:
-            checks.append(self._check("languages", "UNKNOWN", candidate_languages or None, required_languages or None, "岗位或候选人未提供可比较的语言清单"))
+            checks.append(self._check(
+                "languages", "UNKNOWN", candidate_languages or None, None,
+                "岗位未提供明确语言要求，不凭空判定通过",
+            ))
 
         requires_visa = preferences.get("requires_visa")
         sponsorship = hard.get("visa_sponsorship")
@@ -174,15 +206,10 @@ class MatchingService:
         hard_conditions = self._hard_conditions(candidate, job)
         required = self._skill_group(_text_set(candidate.get("skills")), _text_set(job.get("required_skills")))
         preferred = self._skill_group(_text_set(candidate.get("skills")), _text_set(job.get("preferred_skills")))
-        metadata = job.get("source_metadata") if isinstance(job.get("source_metadata"), dict) else {}
-        phase2 = metadata.get("phase2_parsed") if isinstance(metadata.get("phase2_parsed"), dict) else {}
-        critical_raw = _text_set(phase2.get("critical_required_skills"))
-        critical_canonical = {item["canonical_skill"] for item in self.dictionary.normalize_many(critical_raw)}
-        critical_gaps = [item for item in required["evidence"] if not item["matched"] and item["canonical_skill"] in critical_canonical]
         hard_failed = any(item["status"] == "FAIL" for item in hard_conditions)
         if hard_failed:
             grade = "NOT_RECOMMENDED"
-        elif required["ratio"] is None or critical_gaps:
+        elif required["ratio"] is None:
             grade = "WEAK_MATCH"
         elif required["ratio"] >= config["strong_required_coverage"]:
             grade = "STRONG_MATCH"
@@ -198,8 +225,8 @@ class MatchingService:
             "hard_conditions": hard_conditions,
             "required_coverage": required,
             "preferred_coverage": preferred,
-            "critical_gaps": [item["job_skill"] for item in critical_gaps],
-            "other_gaps": [item for item in required["missing_skills"] if item not in {gap["job_skill"] for gap in critical_gaps}],
+            "missing_required_skills": required["missing_skills"],
+            "missing_preferred_skills": preferred["missing_skills"],
             "deterministic": True,
             "llm_decided": False,
         }
@@ -236,8 +263,8 @@ class MatchingService:
             "hard_conditions": result["hard_conditions"],
             "required_coverage": result["required_coverage"],
             "preferred_coverage": result["preferred_coverage"],
-            "critical_gaps": result["critical_gaps"],
-            "other_gaps": result["other_gaps"],
+            "missing_required_skills": result["missing_required_skills"],
+            "missing_preferred_skills": result["missing_preferred_skills"],
             "disclaimer": DISCLAIMER,
         }
         explanation = self.llm.complete_text(

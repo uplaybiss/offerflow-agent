@@ -4,6 +4,7 @@ import re
 from typing import Any
 
 from core.errors import NotFoundError, ValidationError
+from quality.contract_scenarios import AgentContractScenarioEvaluator
 from quality.eval import FixedEvalService
 from quality.scenarios import FixedScenarioEvaluator
 from quality.store import QualityStore
@@ -13,9 +14,10 @@ BASELINE_PATTERN = re.compile(r"^[A-Za-z0-9._:-]{3,64}$")
 
 
 class QualityManagementService:
-    def __init__(self, store: QualityStore, evaluation: FixedEvalService, agentops: Any) -> None:
+    def __init__(self, store: QualityStore, evaluation: FixedEvalService, contract_evaluation: Any, agentops: Any) -> None:
         self.store = store
         self.evaluation = evaluation
+        self.contract_evaluation = contract_evaluation
         self.agentops = agentops
 
     @staticmethod
@@ -48,6 +50,14 @@ class QualityManagementService:
         if not result:
             raise NotFoundError("Trace 不存在")
         return result
+
+    def run_contract(self) -> dict[str, Any]:
+        state = self.agentops.store.release_state()
+        with AgentContractScenarioEvaluator() as scenario:
+            return self.contract_evaluation.run(
+                scenario.evaluate,
+                config_version_id=state["stable_version_id"],
+            )
 
     def evaluation_run(self, eval_run_id: str) -> dict[str, Any]:
         result = self.store.get_eval_run(eval_run_id)

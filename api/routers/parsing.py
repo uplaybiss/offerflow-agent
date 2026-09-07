@@ -5,6 +5,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, File, Request, UploadFile
 
 from api.dependencies import current_user, services
+from api.schemas import TextPreviewBody
 from parsing.extractors import MAX_RESUME_BYTES
 
 
@@ -27,12 +28,10 @@ async def extract_resume_file(
 
 
 @router.post("/resume/preview")
-async def resume_preview(request: Request, _: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
-    payload = await request.json()
-    return services(request).parsing.resume_preview(str(payload.get("text") or ""))
+def resume_preview(body: TextPreviewBody, request: Request, _: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
+    return services(request).parsing.resume_preview(body.text)
 
 
 @router.post("/jd/preview")
-async def jd_preview(request: Request, _: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
-    payload = await request.json()
-    return services(request).parsing.jd_preview(str(payload.get("text") or ""))
+def jd_preview(body: TextPreviewBody, request: Request, _: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
+    return services(request).parsing.jd_preview(body.text)

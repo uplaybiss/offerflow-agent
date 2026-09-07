@@ -213,7 +213,7 @@ CREATE TABLE IF NOT EXISTS pending_actions (
     actor_username TEXT NOT NULL,
     chat_id TEXT NOT NULL,
     action_type TEXT NOT NULL
-        CHECK (action_type IN ('APPLICATION_TRANSITION')),
+        CHECK (action_type IN ('APPLICATION_TRANSITION', 'INTERVIEW_PROGRESSION')),
     payload_json TEXT NOT NULL,
     request_hash TEXT NOT NULL,
     expected_version INTEGER NOT NULL CHECK (expected_version >= 1),
@@ -289,6 +289,7 @@ class Database:
             connection.execute("PRAGMA journal_mode = WAL")
             connection.executescript(SCHEMA)
             self._migrate_phase3(connection)
+            self._migrate_final_hardening(connection)
 
     @staticmethod
     def _migrate_phase3(connection: sqlite3.Connection) -> None:
@@ -313,6 +314,73 @@ class Database:
             WHERE suggestion_key <> ''
             """
         )
+
+    @staticmethod
+    def _migrate_final_hardening(connection: sqlite3.Connection) -> None:
+        row = connection.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'pending_actions'"
+        ).fetchone()
+        if not row or "INTERVIEW_PROGRESSION" in str(row["sql"]):
+            return
+        connection.execute("BEGIN IMMEDIATE")
+        try:
+            connection.execute("ALTER TABLE pending_actions RENAME TO pending_actions_phase4")
+            connection.execute(
+                """
+                CREATE TABLE pending_actions (
+                    action_id TEXT PRIMARY KEY,
+                    candidate_id TEXT NOT NULL,
+                    actor_username TEXT NOT NULL,
+                    chat_id TEXT NOT NULL,
+                    action_type TEXT NOT NULL
+                        CHECK (action_type IN ('APPLICATION_TRANSITION', 'INTERVIEW_PROGRESSION')),
+                    payload_json TEXT NOT NULL,
+                    request_hash TEXT NOT NULL,
+                    expected_version INTEGER NOT NULL CHECK (expected_version >= 1),
+                    status TEXT NOT NULL DEFAULT 'PENDING'
+                        CHECK (status IN ('PENDING', 'EXECUTED', 'EXPIRED', 'CANCELLED', 'FAILED')),
+                    expires_at TEXT NOT NULL,
+                    confirmation_grant_hash TEXT NOT NULL DEFAULT '',
+                    grant_expires_at TEXT NOT NULL DEFAULT '',
+                    confirmed_at TEXT NOT NULL DEFAULT '',
+                    executed_at TEXT NOT NULL DEFAULT '',
+                    result_json TEXT NOT NULL DEFAULT '{}',
+                    failure_code TEXT NOT NULL DEFAULT '',
+                    version INTEGER NOT NULL DEFAULT 1 CHECK (version >= 1),
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    UNIQUE(candidate_id, actor_username, chat_id, request_hash),
+                    FOREIGN KEY(candidate_id) REFERENCES candidate_profiles(candidate_id) ON DELETE CASCADE,
+                    FOREIGN KEY(actor_username) REFERENCES users(username) ON DELETE RESTRICT
+                )
+                """
+            )
+            connection.execute(
+                """
+                INSERT INTO pending_actions (
+                    action_id, candidate_id, actor_username, chat_id, action_type,
+                    payload_json, request_hash, expected_version, status, expires_at,
+                    confirmation_grant_hash, grant_expires_at, confirmed_at, executed_at,
+                    result_json, failure_code, version, created_at, updated_at
+                )
+                SELECT action_id, candidate_id, actor_username, chat_id, action_type,
+                       payload_json, request_hash, expected_version, status, expires_at,
+                       confirmation_grant_hash, grant_expires_at, confirmed_at, executed_at,
+                       result_json, failure_code, version, created_at, updated_at
+                FROM pending_actions_phase4
+                """
+            )
+            connection.execute("DROP TABLE pending_actions_phase4")
+            connection.execute(
+                """
+                CREATE INDEX idx_pending_actions_candidate_status
+                ON pending_actions(candidate_id, status, expires_at, updated_at DESC)
+                """
+            )
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
 
     def table_names(self) -> list[str]:
         with self.connection() as connection:

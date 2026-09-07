@@ -10,6 +10,7 @@ from agent.tools import CAREER_TOOLS
 from agentops.service import AgentOpsService
 from agentops.store import AgentOpsStore
 from core.database import Database
+from quality.contract_eval import CONTRACT_CASES, CONTRACT_SUITE_VERSION
 from quality.eval import FIXED_CASES
 from quality.store import QualityStore
 
@@ -79,10 +80,15 @@ def main() -> None:
         ROOT / "agentops" / "service.py",
         ROOT / "quality" / "management.py",
         ROOT / "quality" / "scenarios.py",
+        ROOT / "quality" / "contract_eval.py",
+        ROOT / "quality" / "contract_scenarios.py",
+        ROOT / "api" / "schemas.py",
         ROOT / "api" / "routers" / "agentops.py",
         ROOT / "frontend" / "src" / "views" / "AgentOpsView.vue",
         ROOT / "scripts" / "run_phase5_acceptance.py",
         ROOT / "scripts" / "run_phase5_live_agent_smoke.py",
+        ROOT / "scripts" / "run_final_hardening_acceptance.py",
+        ROOT / "OfferFlow Final Hardening 报告.md",
     )
     missing = [str(path.relative_to(ROOT)) for path in required_files if not path.exists()]
     if missing:
@@ -99,16 +105,21 @@ def main() -> None:
         raise SystemExit("Career Agent tool schemas must not accept candidate_id")
     if len(FIXED_CASES) != 8:
         raise SystemExit("fixed Phase 4 evaluation set must contain 8 cases")
+    if len(CONTRACT_CASES) != 8 or CONTRACT_SUITE_VERSION != "career-agent-contract-v1":
+        raise SystemExit("Agent Contract / Safety suite must contain 8 scripted cases")
 
     pending_source = (ROOT / "career" / "repositories" / "pending_actions.py").read_text(encoding="utf-8")
-    if not all(term in pending_source for term in ("transaction()", "AGENT_STATUS_CHANGED", "confirmation_grant_hash", "expected_version")):
+    if not all(term in pending_source for term in ("transaction()", "AGENT_STATUS_CHANGED", "INTERVIEW_PROGRESSED", "INTERVIEW_PROGRESSION", "confirmation_grant_hash", "expected_version")):
         raise SystemExit("atomic confirmation / CAS contract missing")
     trace_source = (ROOT / "quality" / "trace.py").read_text(encoding="utf-8")
     if not all(term in trace_source for term in ("ALLOWED_BUSINESS_REF_KEYS", "ALLOWED_METRIC_KEYS", "opaque_ref")):
         raise SystemExit("PII allowlist trace contract missing")
     agentops_source = (ROOT / "agentops" / "service.py").read_text(encoding="utf-8")
-    if not all(term in agentops_source for term in ("select_configuration", "expected_generation", "CANARY", "rollback")):
+    if not all(term in agentops_source for term in ("select_configuration", "expected_generation", "CANARY", "rollback", "enabled_tools", "TOOL_RISKS")):
         raise SystemExit("Phase 5 stable/canary generation control missing")
+    runner_source = (ROOT / "agent" / "runner.py").read_text(encoding="utf-8")
+    if not all(term in runner_source for term in ("enabled_tools", "CAREER_TOOL_CATALOG", "history[-history_messages:]")):
+        raise SystemExit("runtime history window or Tool whitelist is not enforced by Agent Runner")
 
     dist = ROOT / "frontend" / "dist" / "index.html"
     if not dist.exists():
@@ -120,8 +131,18 @@ def main() -> None:
     if not all(term in agent_view for term in ("/api/agent/chat/stream", "/confirm", "待确认动作", "Trace 摘要")):
         raise SystemExit("Career Agent page is not fully wired")
     agentops_view = (ROOT / "frontend" / "src" / "views" / "AgentOpsView.vue").read_text(encoding="utf-8")
-    if not all(term in agentops_view for term in ("generation CAS", "发布灰度", "回滚到此", "固定评测与回放", "Trace 时间线")):
+    if not all(term in agentops_view for term in ("generation CAS", "发布灰度", "回滚到此", "Agent Contract / Safety Eval", "Tool Whitelist", "Trace 时间线")):
         raise SystemExit("AgentOps page is not fully wired")
+
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    required_disclosures = (
+        "面向个人秋招流程的本地单用户/轻量多账号 Agent 工作台",
+        "deterministic matching", "confirmation write", "大规模官网抓取",
+        "自动投递", "多 Agent", "RAG", "分布式服务",
+        "生产级 IAM / Config Center / Observability", "Release Candidate",
+    )
+    if not all(term in readme for term in required_disclosures):
+        raise SystemExit("README release-candidate scope disclosure is incomplete")
 
     requirements = (ROOT / "requirements.txt").read_text(encoding="utf-8").lower()
     if not all(name in requirements for name in ("langchain==", "langchain-openai==")):
@@ -130,8 +151,8 @@ def main() -> None:
     if forbidden_automation:
         raise SystemExit(f"forbidden crawler/browser dependencies: {forbidden_automation}")
 
-    print("PHASE 5 RELEASE CHECK: PASS")
-    print("  9 business tables; 5 quality tables; 4 AgentOps tables; 10 tools; stable/canary generation CAS; PII allowlist Trace; 8 eval cases; 6 pages")
+    print("OFFERFLOW RELEASE CANDIDATE CHECK: PASS")
+    print("  9 business tables; 5 quality tables; 4 AgentOps tables; 10 tools; immutable whitelist; atomic progression; 8 business regressions + 8 scripted contract cases; 6 pages")
 
 
 if __name__ == "__main__":

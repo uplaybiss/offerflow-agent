@@ -13,7 +13,8 @@ from quality.store import QualityStore
 ALLOWED_BUSINESS_REF_KEYS = {
     "job_id", "job_ids", "application_id", "interview_id", "task_id", "action_id",
     "from_status", "to_status", "resulting_version", "expected_version", "grade",
-    "hard_condition_statuses", "reason_code",
+    "hard_condition_statuses", "reason_code", "action_type", "current_round_id",
+    "completed_round_id", "next_round_id",
 }
 ALLOWED_METRIC_KEYS = {
     "item_count", "matched_count", "missing_count", "required_total", "preferred_total",
@@ -66,6 +67,10 @@ class TraceRecorder:
         config_version_id: str = "",
         release_channel: str = "UNVERSIONED",
         release_generation: int = 0,
+        enabled_tools_sha256: str = "",
+        enabled_tool_count: int = 0,
+        history_messages: int = 0,
+        history_messages_used: int = 0,
     ) -> "TraceRecorder":
         recorder = cls(store, new_id("TRC"), new_id("RUN"), time.monotonic())
         store.create_run({
@@ -83,6 +88,10 @@ class TraceRecorder:
             "config_version_id": config_version_id,
             "release_channel": release_channel,
             "release_generation": release_generation,
+            "enabled_tools_sha256": enabled_tools_sha256,
+            "enabled_tool_count": enabled_tool_count,
+            "history_messages": history_messages,
+            "history_messages_used": history_messages_used,
         })
         return recorder
 

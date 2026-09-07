@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
 
 from api.dependencies import candidate_for, current_user, services
+from api.schemas import AgentChatBody, body_dict
 
 
 router = APIRouter(prefix="/api", tags=["career-agent"])
@@ -49,12 +50,12 @@ def _chunks(text: str, size: int = 80) -> Iterator[str]:
 
 
 @router.post("/agent/chat/stream")
-async def chat_stream(request: Request, user: dict[str, Any] = Depends(current_user)) -> StreamingResponse:
+def chat_stream(body: AgentChatBody, request: Request, user: dict[str, Any] = Depends(current_user)) -> StreamingResponse:
     candidate = candidate_for(request, user)
     result = services(request).agent.run(
         candidate=candidate,
         actor_username=user["username"],
-        payload=await request.json(),
+        payload=body_dict(body),
     )
 
     def generate() -> Iterator[str]:

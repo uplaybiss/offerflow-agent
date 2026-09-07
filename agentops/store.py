@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+import hashlib
 import json
 from pathlib import Path
 import sqlite3
@@ -108,6 +109,43 @@ class AgentOpsStore:
                 """,
                 (utc_now(),),
             )
+
+    def migrate_enabled_tools(self, enabled_tools: list[str]) -> int:
+        """Add the pre-whitelist semantic (all tools enabled) to legacy immutable configs."""
+        migrated = 0
+        with self.transaction() as connection:
+            rows = connection.execute(
+                "SELECT version_id, settings_json FROM agent_config_versions"
+            ).fetchall()
+            generation = int(connection.execute(
+                "SELECT generation FROM agent_release_state WHERE singleton_id = 1"
+            ).fetchone()[0])
+            now = utc_now()
+            for row in rows:
+                settings = _load(row["settings_json"], {})
+                if not isinstance(settings, dict) or "enabled_tools" in settings:
+                    continue
+                settings["enabled_tools"] = list(enabled_tools)
+                serialized = _dump(settings)
+                digest = hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+                connection.execute(
+                    "UPDATE agent_config_versions SET settings_json = ?, settings_sha256 = ? WHERE version_id = ?",
+                    (serialized, digest, str(row["version_id"])),
+                )
+                connection.execute(
+                    """
+                    INSERT INTO agent_release_audit (
+                        event_id, event_type, generation, version_id, actor_ref,
+                        detail_json, created_at
+                    ) VALUES (?, 'CONFIG_SCHEMA_MIGRATED', ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        new_id("AUD"), generation, str(row["version_id"]),
+                        "system-migration", _dump({"added": "enabled_tools", "semantic": "all-existing-tools"}), now,
+                    ),
+                )
+                migrated += 1
+        return migrated
 
     @staticmethod
     def _configuration(row: sqlite3.Row) -> dict[str, Any]:

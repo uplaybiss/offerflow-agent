@@ -23,7 +23,11 @@ class PendingActionRepository:
     @staticmethod
     def _row(row: Any) -> dict[str, Any]:
         stored_status = str(row["status"])
-        effective_status = "EXPIRED" if stored_status == "PENDING" and _is_past(str(row["expires_at"])) else stored_status
+        effective_status = (
+            "EXPIRED"
+            if stored_status == "PENDING" and _is_past(str(row["expires_at"]))
+            else stored_status
+        )
         return {
             "action_id": str(row["action_id"]),
             "candidate_id": str(row["candidate_id"]),
@@ -68,6 +72,62 @@ class PendingActionRepository:
             ).fetchall()
         return [self._row(row) for row in rows]
 
+    @staticmethod
+    def _reuse_or_insert(
+        connection: Any,
+        *,
+        candidate_id: str,
+        actor_username: str,
+        chat_id: str,
+        action_type: str,
+        payload: dict[str, Any],
+        request_hash: str,
+        expected_version: int,
+        expires_at: str,
+        now: str,
+    ) -> tuple[str, bool]:
+        existing = connection.execute(
+            """
+            SELECT * FROM pending_actions
+            WHERE candidate_id = ? AND actor_username = ? AND chat_id = ? AND request_hash = ?
+            """,
+            (candidate_id, actor_username, chat_id, request_hash),
+        ).fetchone()
+        if existing:
+            status = str(existing["status"])
+            if status in {"PENDING", "EXECUTED"} and (
+                status == "EXECUTED" or not _is_past(str(existing["expires_at"]))
+            ):
+                return str(existing["action_id"]), True
+            connection.execute(
+                """
+                UPDATE pending_actions
+                SET status = 'PENDING', expires_at = ?, confirmation_grant_hash = '',
+                    grant_expires_at = '', confirmed_at = '', executed_at = '',
+                    result_json = '{}', failure_code = '', version = version + 1,
+                    updated_at = ?
+                WHERE action_id = ?
+                """,
+                (expires_at, now, str(existing["action_id"])),
+            )
+            return str(existing["action_id"]), False
+
+        action_id = new_id("ACT")
+        connection.execute(
+            """
+            INSERT INTO pending_actions (
+                action_id, candidate_id, actor_username, chat_id, action_type,
+                payload_json, request_hash, expected_version, status,
+                expires_at, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', ?, ?, ?)
+            """,
+            (
+                action_id, candidate_id, actor_username, chat_id, action_type,
+                json_dump(payload), request_hash, expected_version, expires_at, now, now,
+            ),
+        )
+        return action_id, False
+
     def create_application_transition(
         self,
         *,
@@ -89,54 +149,299 @@ class PendingActionRepository:
             if int(current["version"]) != int(payload["expected_version"]):
                 raise ConflictError("投递记录已变化，请刷新后重新提议")
             validate_application_transition(str(current["status"]), str(payload["target_status"]))
+            action_id, replayed = self._reuse_or_insert(
+                connection,
+                candidate_id=candidate_id,
+                actor_username=actor_username,
+                chat_id=chat_id,
+                action_type="APPLICATION_TRANSITION",
+                payload=payload,
+                request_hash=request_hash,
+                expected_version=int(payload["expected_version"]),
+                expires_at=expires_at,
+                now=now,
+            )
+        return self.get(candidate_id=candidate_id, action_id=action_id), replayed
 
-            existing = connection.execute(
-                """
-                SELECT * FROM pending_actions
-                WHERE candidate_id = ? AND actor_username = ? AND chat_id = ? AND request_hash = ?
-                """,
-                (candidate_id, actor_username, chat_id, request_hash),
+    def create_interview_progression(
+        self,
+        *,
+        candidate_id: str,
+        actor_username: str,
+        chat_id: str,
+        payload: dict[str, Any],
+        request_hash: str,
+        expires_at: str,
+    ) -> tuple[dict[str, Any], bool]:
+        now = utc_now()
+        with self.database.transaction() as connection:
+            application = connection.execute(
+                "SELECT status, version FROM applications WHERE candidate_id = ? AND application_id = ?",
+                (candidate_id, payload["application_id"]),
             ).fetchone()
-            if existing:
-                status = str(existing["status"])
-                if status in {"PENDING", "EXECUTED"} and (status == "EXECUTED" or not _is_past(str(existing["expires_at"]))):
-                    return self._row(existing), True
-                connection.execute(
-                    """
-                    UPDATE pending_actions
-                    SET status = 'PENDING', expires_at = ?, confirmation_grant_hash = '',
-                        grant_expires_at = '', confirmed_at = '', executed_at = '',
-                        result_json = '{}', failure_code = '', version = version + 1,
-                        updated_at = ?
-                    WHERE action_id = ?
-                    """,
-                    (expires_at, now, str(existing["action_id"])),
-                )
-                action_id = str(existing["action_id"])
-            else:
-                action_id = new_id("ACT")
-                connection.execute(
-                    """
-                    INSERT INTO pending_actions (
-                        action_id, candidate_id, actor_username, chat_id, action_type,
-                        payload_json, request_hash, expected_version, status,
-                        expires_at, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, 'APPLICATION_TRANSITION', ?, ?, ?, 'PENDING', ?, ?, ?)
-                    """,
-                    (
-                        action_id,
-                        candidate_id,
-                        actor_username,
-                        chat_id,
-                        json_dump(payload),
-                        request_hash,
-                        int(payload["expected_version"]),
-                        expires_at,
-                        now,
-                        now,
-                    ),
-                )
-        return self.get(candidate_id=candidate_id, action_id=action_id), False
+            if not application:
+                raise NotFoundError("投递记录不存在")
+            if str(application["status"]) != "INTERVIEW":
+                raise ConflictError("组合面试推进只允许用于 INTERVIEW 状态投递")
+            if int(application["version"]) != int(payload["expected_application_version"]):
+                raise ConflictError("投递记录已变化，请刷新后重新提议")
+            current_round = connection.execute(
+                """
+                SELECT version, status FROM interview_rounds
+                WHERE round_id = ? AND application_id = ?
+                """,
+                (payload["current_round_id"], payload["application_id"]),
+            ).fetchone()
+            if not current_round:
+                raise NotFoundError("当前面试轮次不存在或不属于该投递")
+            if int(current_round["version"]) != int(payload["expected_interview_version"]):
+                raise ConflictError("当前面试轮次已变化，请刷新后重新提议")
+            if str(current_round["status"]) not in {"PLANNED", "SCHEDULED"}:
+                raise ConflictError("当前面试轮次已经完成或取消")
+            action_id, replayed = self._reuse_or_insert(
+                connection,
+                candidate_id=candidate_id,
+                actor_username=actor_username,
+                chat_id=chat_id,
+                action_type="INTERVIEW_PROGRESSION",
+                payload=payload,
+                request_hash=request_hash,
+                expected_version=int(payload["expected_application_version"]),
+                expires_at=expires_at,
+                now=now,
+            )
+        return self.get(candidate_id=candidate_id, action_id=action_id), replayed
+
+    @staticmethod
+    def _execute_application_transition(
+        connection: Any,
+        *,
+        action_id: str,
+        candidate_id: str,
+        actor_username: str,
+        payload: dict[str, Any],
+        expected_version: int,
+        canonical_hash: str,
+        now: str,
+    ) -> dict[str, Any]:
+        application_id = str(payload["application_id"])
+        current = connection.execute(
+            "SELECT * FROM applications WHERE candidate_id = ? AND application_id = ?",
+            (candidate_id, application_id),
+        ).fetchone()
+        if not current:
+            raise NotFoundError("投递记录不存在")
+        if int(current["version"]) != expected_version:
+            raise ConflictError("投递记录已变化，原确认卡已失效")
+        current_status = str(current["status"])
+        target_status = str(payload["target_status"])
+        validate_application_transition(current_status, target_status)
+        resulting_version = expected_version + 1
+        timestamps = {
+            "applied_at": str(current["applied_at"]),
+            "offer_at": str(current["offer_at"]),
+            "rejected_at": str(current["rejected_at"]),
+            "withdrawn_at": str(current["withdrawn_at"]),
+        }
+        if target_status == "APPLIED" and not timestamps["applied_at"]:
+            timestamps["applied_at"] = now
+        if target_status == "OFFER":
+            timestamps["offer_at"] = now
+        if target_status == "REJECTED":
+            timestamps["rejected_at"] = now
+        if target_status == "WITHDRAWN":
+            timestamps["withdrawn_at"] = now
+        cursor = connection.execute(
+            """
+            UPDATE applications
+            SET status = ?, next_action = ?, notes = ?, applied_at = ?,
+                offer_at = ?, rejected_at = ?, withdrawn_at = ?,
+                version = version + 1, updated_at = ?
+            WHERE candidate_id = ? AND application_id = ? AND version = ?
+            """,
+            (
+                target_status, str(payload.get("next_action") or ""),
+                str(payload.get("notes") or ""), timestamps["applied_at"],
+                timestamps["offer_at"], timestamps["rejected_at"],
+                timestamps["withdrawn_at"], now, candidate_id, application_id,
+                expected_version,
+            ),
+        )
+        if cursor.rowcount != 1:
+            raise ConflictError("投递记录并发更新失败")
+        sequence = int(connection.execute(
+            "SELECT COALESCE(MAX(sequence), 0) + 1 FROM application_events WHERE application_id = ?",
+            (application_id,),
+        ).fetchone()[0])
+        connection.execute(
+            """
+            INSERT INTO application_events (
+                event_id, application_id, sequence, event_type,
+                from_status, to_status, actor_username, message,
+                payload_json, command_id, request_hash,
+                resulting_version, created_at
+            ) VALUES (?, ?, ?, 'AGENT_STATUS_CHANGED', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                new_id("EVT"), application_id, sequence, current_status, target_status,
+                actor_username, f"Agent 确认执行：{current_status} → {target_status}",
+                json_dump({
+                    "action_id": action_id,
+                    "next_action": str(payload.get("next_action") or ""),
+                    "notes": str(payload.get("notes") or ""),
+                }),
+                f"agent:{action_id}", canonical_hash, resulting_version, now,
+            ),
+        )
+        return {
+            "action_type": "APPLICATION_TRANSITION",
+            "application_id": application_id,
+            "from_status": current_status,
+            "to_status": target_status,
+            "resulting_version": resulting_version,
+        }
+
+    @staticmethod
+    def _execute_interview_progression(
+        connection: Any,
+        *,
+        action_id: str,
+        candidate_id: str,
+        actor_username: str,
+        payload: dict[str, Any],
+        canonical_hash: str,
+        now: str,
+    ) -> dict[str, Any]:
+        application_id = str(payload["application_id"])
+        expected_application = int(payload["expected_application_version"])
+        current = connection.execute(
+            "SELECT * FROM applications WHERE candidate_id = ? AND application_id = ?",
+            (candidate_id, application_id),
+        ).fetchone()
+        if not current:
+            raise NotFoundError("投递记录不存在")
+        if str(current["status"]) != "INTERVIEW":
+            raise ConflictError("投递已不在 INTERVIEW 状态，原确认卡失效")
+        if int(current["version"]) != expected_application:
+            raise ConflictError("投递记录已变化，原确认卡已失效")
+
+        current_round = connection.execute(
+            """
+            SELECT * FROM interview_rounds
+            WHERE round_id = ? AND application_id = ?
+            """,
+            (payload["current_round_id"], application_id),
+        ).fetchone()
+        if not current_round:
+            raise NotFoundError("当前面试轮次不存在或不属于该投递")
+        expected_interview = int(payload["expected_interview_version"])
+        if int(current_round["version"]) != expected_interview:
+            raise ConflictError("当前面试轮次已变化，原确认卡已失效")
+        if str(current_round["status"]) not in {"PLANNED", "SCHEDULED"}:
+            raise ConflictError("当前面试轮次已经完成或取消")
+        updated = connection.execute(
+            """
+            UPDATE interview_rounds
+            SET status = 'COMPLETED', completed_at = ?, result = ?,
+                version = version + 1, updated_at = ?
+            WHERE round_id = ? AND application_id = ? AND version = ?
+            """,
+            (
+                now, payload["current_round_result"], now,
+                payload["current_round_id"], application_id, expected_interview,
+            ),
+        )
+        if updated.rowcount != 1:
+            raise ConflictError("当前面试轮次并发更新失败")
+
+        next_round_id = new_id("INT")
+        next_round_no = int(connection.execute(
+            "SELECT COALESCE(MAX(round_no), 0) + 1 FROM interview_rounds WHERE application_id = ?",
+            (application_id,),
+        ).fetchone()[0])
+        connection.execute(
+            """
+            INSERT INTO interview_rounds (
+                round_id, application_id, round_no, round_type, title,
+                status, scheduled_at, completed_at, notes, result,
+                created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, 'SCHEDULED', ?, '', '', '', ?, ?)
+            """,
+            (
+                next_round_id, application_id, next_round_no,
+                payload["next_round_type"], payload["next_round_title"],
+                payload["next_round_scheduled_at"], now, now,
+            ),
+        )
+
+        task_id = new_id("TSK")
+        connection.execute(
+            """
+            INSERT INTO job_search_tasks (
+                task_id, candidate_id, job_id, application_id,
+                interview_round_id, title, description, task_type,
+                status, priority, due_at, origin, suggestion_key,
+                suggestion_source, suggestion_payload_json, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, '', 'INTERVIEW', 'TODO', 'P1', ?,
+                      'MANUAL', '', '', '{}', ?, ?)
+            """,
+            (
+                task_id, candidate_id, str(current["job_id"]), application_id,
+                next_round_id, payload["task_title"], payload["task_due_at"], now, now,
+            ),
+        )
+
+        resulting_version = expected_application + 1
+        changed = connection.execute(
+            """
+            UPDATE applications
+            SET status = 'INTERVIEW', next_action = ?, version = version + 1, updated_at = ?
+            WHERE candidate_id = ? AND application_id = ? AND status = 'INTERVIEW' AND version = ?
+            """,
+            (
+                f"准备{payload['next_round_title']}", now, candidate_id,
+                application_id, expected_application,
+            ),
+        )
+        if changed.rowcount != 1:
+            raise ConflictError("投递记录并发更新失败")
+
+        sequence = int(connection.execute(
+            "SELECT COALESCE(MAX(sequence), 0) + 1 FROM application_events WHERE application_id = ?",
+            (application_id,),
+        ).fetchone()[0])
+        connection.execute(
+            """
+            INSERT INTO application_events (
+                event_id, application_id, sequence, event_type,
+                from_status, to_status, actor_username, message,
+                payload_json, command_id, request_hash,
+                resulting_version, created_at
+            ) VALUES (?, ?, ?, 'INTERVIEW_PROGRESSED', 'INTERVIEW', 'INTERVIEW', ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                new_id("EVT"), application_id, sequence, actor_username,
+                "Agent 确认完成当前面试并安排下一轮",
+                json_dump({
+                    "action_id": action_id,
+                    "completed_round_id": str(payload["current_round_id"]),
+                    "next_round_id": next_round_id,
+                    "task_id": task_id,
+                }),
+                f"agent:{action_id}", canonical_hash, resulting_version, now,
+            ),
+        )
+        return {
+            "action_type": "INTERVIEW_PROGRESSION",
+            "application_id": application_id,
+            "from_status": "INTERVIEW",
+            "to_status": "INTERVIEW",
+            "resulting_version": resulting_version,
+            "completed_round_id": str(payload["current_round_id"]),
+            "completed_round_version": expected_interview + 1,
+            "next_round_id": next_round_id,
+            "task_id": task_id,
+        }
 
     def confirm_and_execute(
         self,
@@ -179,97 +484,30 @@ class PendingActionRepository:
                     f"{raw_grant}|{action_id}|{actor_username}|{canonical_hash}".encode("utf-8")
                 ).hexdigest()
 
-                current = connection.execute(
-                    "SELECT * FROM applications WHERE candidate_id = ? AND application_id = ?",
-                    (candidate_id, application_id),
-                ).fetchone()
-                if not current:
-                    raise NotFoundError("投递记录不存在")
-                expected_version = int(action["expected_version"])
-                if int(current["version"]) != expected_version:
-                    raise ConflictError("投递记录已变化，原确认卡已失效")
-                current_status = str(current["status"])
-                target_status = str(payload["target_status"])
-                validate_application_transition(current_status, target_status)
-                resulting_version = expected_version + 1
-                timestamps = {
-                    "applied_at": str(current["applied_at"]),
-                    "offer_at": str(current["offer_at"]),
-                    "rejected_at": str(current["rejected_at"]),
-                    "withdrawn_at": str(current["withdrawn_at"]),
-                }
-                if target_status == "APPLIED" and not timestamps["applied_at"]:
-                    timestamps["applied_at"] = now
-                if target_status == "OFFER":
-                    timestamps["offer_at"] = now
-                if target_status == "REJECTED":
-                    timestamps["rejected_at"] = now
-                if target_status == "WITHDRAWN":
-                    timestamps["withdrawn_at"] = now
-                cursor = connection.execute(
-                    """
-                    UPDATE applications
-                    SET status = ?, next_action = ?, notes = ?, applied_at = ?,
-                        offer_at = ?, rejected_at = ?, withdrawn_at = ?,
-                        version = version + 1, updated_at = ?
-                    WHERE candidate_id = ? AND application_id = ? AND version = ?
-                    """,
-                    (
-                        target_status,
-                        str(payload.get("next_action") or ""),
-                        str(payload.get("notes") or ""),
-                        timestamps["applied_at"],
-                        timestamps["offer_at"],
-                        timestamps["rejected_at"],
-                        timestamps["withdrawn_at"],
-                        now,
-                        candidate_id,
-                        application_id,
-                        expected_version,
-                    ),
-                )
-                if cursor.rowcount != 1:
-                    raise ConflictError("投递记录并发更新失败")
-                sequence = int(
-                    connection.execute(
-                        "SELECT COALESCE(MAX(sequence), 0) + 1 FROM application_events WHERE application_id = ?",
-                        (application_id,),
-                    ).fetchone()[0]
-                )
-                connection.execute(
-                    """
-                    INSERT INTO application_events (
-                        event_id, application_id, sequence, event_type,
-                        from_status, to_status, actor_username, message,
-                        payload_json, command_id, request_hash,
-                        resulting_version, created_at
-                    ) VALUES (?, ?, ?, 'AGENT_STATUS_CHANGED', ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        new_id("EVT"),
-                        application_id,
-                        sequence,
-                        current_status,
-                        target_status,
-                        actor_username,
-                        f"Agent 确认执行：{current_status} → {target_status}",
-                        json_dump({
-                            "action_id": action_id,
-                            "next_action": str(payload.get("next_action") or ""),
-                            "notes": str(payload.get("notes") or ""),
-                        }),
-                        f"agent:{action_id}",
-                        canonical_hash,
-                        resulting_version,
-                        now,
-                    ),
-                )
-                result = {
-                    "application_id": application_id,
-                    "from_status": current_status,
-                    "to_status": target_status,
-                    "resulting_version": resulting_version,
-                }
+                action_type = str(action["action_type"])
+                if action_type == "APPLICATION_TRANSITION":
+                    result = self._execute_application_transition(
+                        connection,
+                        action_id=action_id,
+                        candidate_id=candidate_id,
+                        actor_username=actor_username,
+                        payload=payload,
+                        expected_version=int(action["expected_version"]),
+                        canonical_hash=canonical_hash,
+                        now=now,
+                    )
+                elif action_type == "INTERVIEW_PROGRESSION":
+                    result = self._execute_interview_progression(
+                        connection,
+                        action_id=action_id,
+                        candidate_id=candidate_id,
+                        actor_username=actor_username,
+                        payload=payload,
+                        canonical_hash=canonical_hash,
+                        now=now,
+                    )
+                else:
+                    raise ValidationError("待确认动作类型无效")
                 connection.execute(
                     """
                     UPDATE pending_actions

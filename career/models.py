@@ -102,3 +102,4 @@ class PendingActionStatus(str, Enum):
 
 class PendingActionType(str, Enum):
     APPLICATION_TRANSITION = "APPLICATION_TRANSITION"
+    INTERVIEW_PROGRESSION = "INTERVIEW_PROGRESSION"

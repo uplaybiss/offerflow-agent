@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from enum import Enum
 from typing import Any
 
 from fastapi import APIRouter, Depends, Query, Request
@@ -9,6 +10,11 @@ from api.dependencies import admin_user, services
 
 
 router = APIRouter(prefix="/api/agentops", tags=["agentops"])
+
+
+class ReleaseChannel(str, Enum):
+    STABLE = "STABLE"
+    CANARY = "CANARY"
 
 
 class ConfigurationBody(BaseModel):
@@ -24,24 +30,24 @@ class ValidateBody(BaseModel):
 
 class PublishBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    version_id: str
-    channel: str
+    version_id: str = Field(min_length=1, max_length=100)
+    channel: ReleaseChannel
     canary_percent: float = 0
     expected_generation: int = Field(ge=0)
-    command_id: str
+    command_id: str = Field(min_length=8, max_length=100)
 
 
 class RollbackBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    target_version_id: str
+    target_version_id: str = Field(min_length=1, max_length=100)
     expected_generation: int = Field(ge=0)
-    command_id: str
+    command_id: str = Field(min_length=8, max_length=100)
     reason: str = Field(default="", max_length=500)
 
 
 class EvaluationBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    baseline_name: str = "phase5-stable"
+    baseline_name: str = Field(default="phase5-stable", min_length=1, max_length=100)
     update_baseline: bool = False
 
 
@@ -88,7 +94,7 @@ def publish(
     request: Request,
     user: dict[str, Any] = Depends(admin_user),
 ) -> dict[str, Any]:
-    return services(request).agentops.publish(body.model_dump(), user["username"])
+    return services(request).agentops.publish(body.model_dump(mode="json"), user["username"])
 
 
 @router.post("/rollback")
@@ -149,6 +155,14 @@ def replay_evaluation(
     _: dict[str, Any] = Depends(admin_user),
 ) -> dict[str, Any]:
     return {"evaluation": services(request).quality_management.run_fixed(body.model_dump(), replay=True)}
+
+
+@router.post("/evaluations/contract")
+def run_contract_evaluation(
+    request: Request,
+    _: dict[str, Any] = Depends(admin_user),
+) -> dict[str, Any]:
+    return {"evaluation": services(request).quality_management.run_contract()}
 
 
 @router.get("/evaluations/{eval_run_id}")

@@ -30,6 +30,7 @@ from parsing.llm import DashScopeLlmClient, LlmClient
 from parsing.service import ParsingService
 from quality.store import QualityStore, quality_database_path
 from quality.eval import FixedEvalService
+from quality.contract_eval import AgentContractEvalService
 from quality.management import QualityManagementService
 from sources.adapters import SourceAdapterRegistry
 
@@ -53,6 +54,7 @@ class Services:
     skill_gaps: SkillGapService
     quality: QualityStore
     evaluation: FixedEvalService
+    contract_evaluation: AgentContractEvalService
     agentops: AgentOpsService
     quality_management: QualityManagementService
     agent: Any
@@ -85,7 +87,8 @@ def build_services(
     quality.initialize()
     agentops = AgentOpsService(AgentOpsStore(agentops_path or agentops_database_path()))
     evaluation = FixedEvalService(quality)
-    quality_management = QualityManagementService(quality, evaluation, agentops)
+    contract_evaluation = AgentContractEvalService(quality)
+    quality_management = QualityManagementService(quality, evaluation, contract_evaluation, agentops)
     container = Services(
         database=database,
         auth=auth,
@@ -104,6 +107,7 @@ def build_services(
         skill_gaps=skill_gaps,
         quality=quality,
         evaluation=evaluation,
+        contract_evaluation=contract_evaluation,
         agentops=agentops,
         quality_management=quality_management,
         agent=None,

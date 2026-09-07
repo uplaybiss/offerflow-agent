@@ -90,7 +90,7 @@ class Phase5TestCase(unittest.TestCase):
         self.assertEqual(data["stable"]["status"], "RELEASED")
         self.assertEqual(
             set(data["stable"]["settings"]),
-            {"model_name", "max_retries", "temperature", "history_messages", "prompt_version", "toolset_version", "rule_version"},
+            {"model_name", "max_retries", "temperature", "history_messages", "prompt_version", "toolset_version", "rule_version", "enabled_tools"},
         )
         connection = sqlite3.connect(self.agentops_path)
         try:

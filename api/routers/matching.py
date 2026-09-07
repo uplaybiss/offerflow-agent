@@ -5,6 +5,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, Request
 
 from api.dependencies import candidate_for, current_user, services
+from api.schemas import CompareJobsBody
 
 
 router = APIRouter(prefix="/api", tags=["matching"])
@@ -22,10 +23,9 @@ def match_job(job_id: str, request: Request, user: dict[str, Any] = Depends(curr
 
 
 @router.post("/jobs/compare")
-async def compare_jobs(request: Request, user: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
+def compare_jobs(body: CompareJobsBody, request: Request, user: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
     candidate = candidate_for(request, user)
-    payload = await request.json()
-    return {"comparison": services(request).matching.compare(candidate, payload.get("job_ids"))}
+    return {"comparison": services(request).matching.compare(candidate, body.job_ids)}
 
 
 @router.post("/jobs/{job_id}/match/explanation")

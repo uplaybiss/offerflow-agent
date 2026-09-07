@@ -6,7 +6,7 @@ from typing import Any
 
 from agent.context import AgentRequestContext, bind_agent_context
 from agent.runner import AgentRunner, LangChainCareerAgentRunner, PROMPT_VERSION
-from agent.tools import TOOLSET_VERSION, confirm_application_change
+from agent.tools import TOOLSET_VERSION, confirm_application_change, enabled_tools_sha256
 from career.services.memory import validate_chat_id
 from core.errors import ExternalServiceError, OfferFlowError, ValidationError
 from matching.service import DISCLAIMER
@@ -36,7 +36,8 @@ class CareerAgentService:
             "model": stable["settings"]["model_name"],
             "prompt_version": PROMPT_VERSION,
             "toolset_version": TOOLSET_VERSION,
-            "tool_count": 10,
+            "tool_count": len(stable["settings"]["enabled_tools"]),
+            "enabled_tools": stable["settings"]["enabled_tools"],
             "stream_format": "application/x-ndjson",
             "confirmation_required_for_writes": True,
             "trace_policy": "pii_allowlist_v1",
@@ -51,7 +52,7 @@ class CareerAgentService:
         if not isinstance(value, list):
             return []
         result: list[dict[str, str]] = []
-        for item in value[-12:]:
+        for item in value[-20:]:
             if not isinstance(item, dict) or item.get("role") not in {"user", "assistant"}:
                 continue
             content = str(item.get("content") or "")[:8_000]
@@ -70,6 +71,11 @@ class CareerAgentService:
             raise ExternalServiceError("Career Agent 未配置可用的 DASHSCOPE_API_KEY；其他页面仍可正常使用")
         runtime = self.agentops.select_configuration(f"{candidate['candidate_id']}:{chat_id}")
         settings = runtime["settings"]
+        history = self._history(payload.get("history"))
+        history_limit = int(settings["history_messages"])
+        history_used = min(len(history), history_limit)
+        enabled_tools = [str(item) for item in settings["enabled_tools"]]
+        whitelist_hash = enabled_tools_sha256(enabled_tools)
         selected = {
             "current_job_id": str(payload.get("current_job_id") or ""),
             "current_application_id": str(payload.get("current_application_id") or ""),
@@ -94,6 +100,10 @@ class CareerAgentService:
             config_version_id=runtime["version_id"],
             release_channel=runtime["channel"],
             release_generation=runtime["generation"],
+            enabled_tools_sha256=whitelist_hash,
+            enabled_tool_count=len(enabled_tools),
+            history_messages=history_limit,
+            history_messages_used=history_used,
         )
         context = AgentRequestContext(
             services=self.services, candidate=candidate, actor_username=actor_username,
@@ -103,7 +113,7 @@ class CareerAgentService:
             with bind_agent_context(context):
                 output = self.runner.run(
                     message=message,
-                    history=self._history(payload.get("history")),
+                    history=history,
                     runtime_config=settings,
                 )
             trace.mark_first_chunk()
@@ -133,6 +143,11 @@ class CareerAgentService:
                 "config_version_id": runtime["version_id"],
                 "release_channel": runtime["channel"],
                 "release_generation": runtime["generation"],
+                "enabled_tools": enabled_tools,
+                "enabled_tools_sha256": whitelist_hash,
+                "enabled_tool_count": len(enabled_tools),
+                "history_messages": history_limit,
+                "history_messages_used": history_used,
             },
         }
 
@@ -140,6 +155,7 @@ class CareerAgentService:
         action = self.services.pending_actions.get(candidate["candidate_id"], action_id)
         runtime = self.agentops.select_configuration(f"{candidate['candidate_id']}:{action['chat_id']}")
         settings = runtime["settings"]
+        enabled_tools = [str(item) for item in settings["enabled_tools"]]
         trace = TraceRecorder.start(
             self.quality_store,
             actor_username=actor_username,
@@ -154,6 +170,10 @@ class CareerAgentService:
             config_version_id=runtime["version_id"],
             release_channel=runtime["channel"],
             release_generation=runtime["generation"],
+            enabled_tools_sha256=enabled_tools_sha256(enabled_tools),
+            enabled_tool_count=len(enabled_tools),
+            history_messages=int(settings["history_messages"]),
+            history_messages_used=0,
         )
         context = AgentRequestContext(
             services=self.services, candidate=candidate, actor_username=actor_username,

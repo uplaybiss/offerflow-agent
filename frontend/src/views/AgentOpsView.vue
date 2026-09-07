@@ -14,6 +14,7 @@ const label = ref('candidate-config')
 const modelName = ref('')
 const maxRetries = ref(2)
 const historyMessages = ref(12)
+const enabledTools = ref<string[]>([])
 const canaryPercent = ref(10)
 const baselineName = ref('phase5-stable')
 
@@ -22,6 +23,7 @@ async function load() {
   try {
     overview.value = await api.get<AgentOpsOverview>('/api/agentops/overview?window_minutes=60')
     if (!modelName.value && overview.value.stable) modelName.value = overview.value.stable.settings.model_name
+    if (!enabledTools.value.length && overview.value.stable) enabledTools.value = [...overview.value.stable.settings.enabled_tools]
   } catch (err) { error.value = (err as Error).message }
   finally { loading.value = false }
 }
@@ -38,7 +40,7 @@ async function createDraft() {
   if (!base) return
   await act(() => api.post('/api/agentops/configurations', {
     label: label.value,
-    settings: { ...base, model_name: modelName.value, max_retries: maxRetries.value, history_messages: historyMessages.value },
+    settings: { ...base, model_name: modelName.value, max_retries: maxRetries.value, history_messages: historyMessages.value, enabled_tools: enabledTools.value },
   }), '已创建不可变草稿，请校验后再发布。')
 }
 
@@ -77,6 +79,13 @@ async function runEvaluation(replay: boolean) {
     })
     selectedEvaluation.value = result.evaluation
   }, replay ? '基线回放完成。' : '固定评测完成并更新基线。')
+}
+
+async function runContractEvaluation() {
+  await act(async () => {
+    const result = await api.post<{ evaluation: EvaluationRun }>('/api/agentops/evaluations/contract', {})
+    selectedEvaluation.value = result.evaluation
+  }, 'Agent Contract / Safety Eval 完成。')
 }
 
 async function inspectTrace(traceId: string) {
@@ -128,6 +137,7 @@ onMounted(load)
             <label>最大重试<input v-model.number="maxRetries" type="number" min="0" max="5" /></label>
             <label>历史消息数<input v-model.number="historyMessages" type="number" min="1" max="20" /></label>
           </div>
+          <div class="tool-whitelist"><strong>Tool Whitelist</strong><label v-for="tool in overview.tool_catalog" :key="tool.name"><input v-model="enabledTools" type="checkbox" :value="tool.name" /><span>{{ tool.name }} · {{ tool.risk }}</span></label></div>
           <button class="primary" :disabled="actionLoading" @click="createDraft">创建不可变草稿</button>
         </article>
       </div>
@@ -138,7 +148,7 @@ onMounted(load)
           <div v-for="version in overview.versions" :key="version.version_id" class="config-row">
             <div><strong>{{ version.label }}</strong><code>{{ version.version_id }}</code><small>{{ formatTime(version.created_at) }} · rev {{ version.revision }}</small></div>
             <span class="status-pill">{{ version.status }}</span>
-            <div class="config-values"><span>{{ version.settings.model_name }}</span><span>retry {{ version.settings.max_retries }}</span><span>history {{ version.settings.history_messages }}</span></div>
+            <div class="config-values"><span>{{ version.settings.model_name }}</span><span>retry {{ version.settings.max_retries }}</span><span>history {{ version.settings.history_messages }}</span><span>tools {{ version.settings.enabled_tools.length }}</span></div>
             <div class="row-actions">
               <button v-if="version.status === 'DRAFT'" class="secondary" :disabled="actionLoading" @click="validate(version)">校验</button>
               <template v-else><button class="secondary" :disabled="actionLoading" @click="publish(version, 'CANARY')">发布灰度</button><button class="primary" :disabled="actionLoading" @click="publish(version, 'STABLE')">发布稳定</button><button class="ghost" :disabled="actionLoading" @click="rollback(version)">回滚到此</button></template>
@@ -149,9 +159,11 @@ onMounted(load)
 
       <div class="ops-columns">
         <article class="panel ops-panel">
-          <div class="section-heading"><div><h2>固定评测与回放</h2><p>career-agent-fixed-v1 · 隔离业务库 · 8 个用例</p></div></div>
+          <div class="section-heading"><div><h2>固定评测与回放 + Contract Eval</h2><p>业务回归与 Agent Contract/Safety 分开标记，均使用隔离合成数据</p></div></div>
           <label>基线名称<input v-model="baselineName" /></label>
           <div class="button-row"><button class="primary" :disabled="actionLoading" @click="runEvaluation(false)">运行并更新基线</button><button class="secondary" :disabled="actionLoading" @click="runEvaluation(true)">沙箱回放对比</button></div>
+          <button class="secondary" :disabled="actionLoading" @click="runContractEvaluation">运行 Agent Contract / Safety Eval（脚本化）</button>
+          <p class="boundary-note">career-agent-fixed-v1 是确定性业务回归；career-agent-contract-v1 验证 Tool 路由、参数、隔离与写安全，不代表真实模型效果。真实 Qwen 仅做非 CI smoke。</p>
           <div class="compact-list">
             <button v-for="run in overview.recent_evaluations" :key="run.eval_run_id" @click="inspectEvaluation(run.eval_run_id)"><span><b>{{ run.run_mode }}</b> {{ run.passed }}/{{ run.total }}</span><small>{{ run.baseline_status }} · {{ formatTime(run.started_at) }}</small></button>
           </div>
@@ -171,7 +183,7 @@ onMounted(load)
       </article>
 
       <article v-if="selectedTrace" class="panel ops-panel detail-panel">
-        <div class="section-heading"><div><h2>Trace 时间线</h2><p>{{ selectedTrace.trace_id }} · {{ selectedTrace.release_channel }} / generation {{ selectedTrace.release_generation }}</p></div><button class="ghost" @click="selectedTrace = null">关闭</button></div>
+        <div class="section-heading"><div><h2>Trace 时间线</h2><p>{{ selectedTrace.trace_id }} · {{ selectedTrace.release_channel }} / generation {{ selectedTrace.release_generation }} · tools {{ selectedTrace.enabled_tool_count }} · history {{ selectedTrace.history_messages_used }}/{{ selectedTrace.history_messages }}</p></div><button class="ghost" @click="selectedTrace = null">关闭</button></div>
         <div class="trace-timeline"><div v-for="event in selectedTrace.events" :key="event.sequence"><b>#{{ event.sequence }} {{ event.event_type }}</b><span>{{ event.tool_name || 'runtime' }} · {{ event.status }} · {{ event.duration_ms ?? '—' }}ms</span></div></div>
       </article>
     </div>

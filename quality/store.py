@@ -27,6 +27,10 @@ CREATE TABLE IF NOT EXISTS agent_runs (
     config_version_id TEXT NOT NULL DEFAULT '',
     release_channel TEXT NOT NULL DEFAULT 'UNVERSIONED',
     release_generation INTEGER NOT NULL DEFAULT 0,
+    enabled_tools_sha256 TEXT NOT NULL DEFAULT '',
+    enabled_tool_count INTEGER NOT NULL DEFAULT 0,
+    history_messages INTEGER NOT NULL DEFAULT 0,
+    history_messages_used INTEGER NOT NULL DEFAULT 0,
     input_chars INTEGER NOT NULL DEFAULT 0,
     output_chars INTEGER NOT NULL DEFAULT 0,
     input_tokens INTEGER NOT NULL DEFAULT 0,
@@ -153,6 +157,10 @@ class QualityStore:
                     "config_version_id": "TEXT NOT NULL DEFAULT ''",
                     "release_channel": "TEXT NOT NULL DEFAULT 'UNVERSIONED'",
                     "release_generation": "INTEGER NOT NULL DEFAULT 0",
+                    "enabled_tools_sha256": "TEXT NOT NULL DEFAULT ''",
+                    "enabled_tool_count": "INTEGER NOT NULL DEFAULT 0",
+                    "history_messages": "INTEGER NOT NULL DEFAULT 0",
+                    "history_messages_used": "INTEGER NOT NULL DEFAULT 0",
                 },
                 "eval_runs": {
                     "run_mode": "TEXT NOT NULL DEFAULT 'EVAL'",
@@ -184,8 +192,9 @@ class QualityStore:
                     run_id, trace_id, actor_ref, candidate_ref, chat_id_hash,
                     run_type, status, model_name, prompt_version, toolset_version,
                     rule_version, config_version_id, release_channel,
-                    release_generation, input_chars, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, 'RUNNING', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    release_generation, enabled_tools_sha256, enabled_tool_count,
+                    history_messages, history_messages_used, input_chars, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, 'RUNNING', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     values["run_id"], values["trace_id"], values["actor_ref"],
@@ -194,6 +203,10 @@ class QualityStore:
                     values["rule_version"], values.get("config_version_id", ""),
                     values.get("release_channel", "UNVERSIONED"),
                     int(values.get("release_generation", 0)),
+                    values.get("enabled_tools_sha256", ""),
+                    int(values.get("enabled_tool_count", 0)),
+                    int(values.get("history_messages", 0)),
+                    int(values.get("history_messages_used", 0)),
                     int(values.get("input_chars", 0)), utc_now(),
                 ),
             )
@@ -252,6 +265,10 @@ class QualityStore:
             "config_version_id": str(run["config_version_id"]),
             "release_channel": str(run["release_channel"]),
             "release_generation": int(run["release_generation"]),
+            "enabled_tools_sha256": str(run["enabled_tools_sha256"]),
+            "enabled_tool_count": int(run["enabled_tool_count"]),
+            "history_messages": int(run["history_messages"]),
+            "history_messages_used": int(run["history_messages_used"]),
             "input_chars": int(run["input_chars"]),
             "output_chars": int(run["output_chars"]),
             "input_tokens": int(run["input_tokens"]),
@@ -348,6 +365,10 @@ class QualityStore:
                 "config_version_id": str(row["config_version_id"]),
                 "release_channel": str(row["release_channel"]),
                 "release_generation": int(row["release_generation"]),
+                "enabled_tools_sha256": str(row["enabled_tools_sha256"]),
+                "enabled_tool_count": int(row["enabled_tool_count"]),
+                "history_messages": int(row["history_messages"]),
+                "history_messages_used": int(row["history_messages_used"]),
                 "input_tokens": int(row["input_tokens"]),
                 "output_tokens": int(row["output_tokens"]),
                 "first_chunk_ms": row["first_chunk_ms"],

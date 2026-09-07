@@ -5,6 +5,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, Request
 
 from api.dependencies import current_user, services
+from api.schemas import CandidateUpdateBody, body_dict
 
 
 router = APIRouter(prefix="/api/candidate", tags=["candidate"])
@@ -16,6 +17,9 @@ def get_candidate(request: Request, user: dict[str, Any] = Depends(current_user)
 
 
 @router.put("")
-async def update_candidate(request: Request, user: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
-    payload = await request.json()
-    return {"candidate": services(request).candidate.update(user["username"], payload)}
+def update_candidate(
+    body: CandidateUpdateBody,
+    request: Request,
+    user: dict[str, Any] = Depends(current_user),
+) -> dict[str, Any]:
+    return {"candidate": services(request).candidate.update(user["username"], body_dict(body))}

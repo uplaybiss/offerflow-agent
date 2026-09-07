@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 from functools import wraps
+import hashlib
+import json
 from typing import Any, Callable
 
 from langchain_core.tools import tool
@@ -32,7 +34,7 @@ def _trace_tool(name: str) -> Callable[[Callable[..., dict[str, Any]]], Callable
             context = current_agent_context()
             refs = {
                 key: kwargs[key]
-                for key in ("job_id", "job_ids", "application_id", "action_id", "expected_version", "target_status")
+                for key in ("job_id", "job_ids", "application_id", "action_id", "expected_version", "target_status", "current_round_id", "action_type")
                 if key in kwargs
             }
             started, started_at = context.trace.tool_start(name, TOOL_RISKS[name], refs)
@@ -228,29 +230,59 @@ def list_upcoming_tasks(days: int = 7, status: str = "") -> dict[str, Any]:
 @_trace_tool("propose_application_change")
 def propose_application_change(
     application_id: str,
-    target_status: str,
     expected_version: int,
+    target_status: str = "",
+    action_type: str = "APPLICATION_TRANSITION",
     next_action: str = "",
     notes: str = "",
+    current_round_id: str = "",
+    current_round_result: str = "",
+    next_round_type: str = "OTHER",
+    next_round_title: str = "",
+    next_round_scheduled_at: str = "",
+    task_title: str = "",
+    task_due_at: str = "",
+    expected_interview_version: int = 0,
 ) -> dict[str, Any]:
-    """仅创建投递状态变更确认卡，不修改 Application；用户必须在界面显式确认。"""
+    """创建投递状态或面试推进确认卡；不直接写业务数据，用户必须在界面显式确认。"""
     context = current_agent_context()
+    normalized_type = str(action_type or "APPLICATION_TRANSITION").upper()
     if context.sandbox:
         return {
             "sandbox": True, "requires_confirmation": True, "persisted": False,
             "application_id": application_id, "to_status": target_status,
             "expected_version": expected_version, "action_id": "SANDBOX-ACTION",
+            "action_type": normalized_type,
         }
-    result = context.services.pending_actions.propose_application_transition(
-        candidate_id=context.candidate["candidate_id"],
-        actor_username=context.actor_username,
-        chat_id=context.chat_id,
-        application_id=application_id,
-        target_status=target_status,
-        expected_version=expected_version,
-        next_action=next_action,
-        notes=notes,
-    )
+    if normalized_type == "APPLICATION_TRANSITION":
+        result = context.services.pending_actions.propose_application_transition(
+            candidate_id=context.candidate["candidate_id"],
+            actor_username=context.actor_username,
+            chat_id=context.chat_id,
+            application_id=application_id,
+            target_status=target_status,
+            expected_version=expected_version,
+            next_action=next_action,
+            notes=notes,
+        )
+    elif normalized_type == "INTERVIEW_PROGRESSION":
+        result = context.services.pending_actions.propose_interview_progression(
+            candidate_id=context.candidate["candidate_id"],
+            actor_username=context.actor_username,
+            chat_id=context.chat_id,
+            application_id=application_id,
+            current_round_id=current_round_id,
+            current_round_result=current_round_result,
+            next_round_type=next_round_type,
+            next_round_title=next_round_title,
+            next_round_scheduled_at=next_round_scheduled_at,
+            task_title=task_title,
+            task_due_at=task_due_at,
+            expected_application_version=expected_version,
+            expected_interview_version=expected_interview_version,
+        )
+    else:
+        raise ValidationError("action_type 必须是 APPLICATION_TRANSITION 或 INTERVIEW_PROGRESSION")
     action = result["action"]
     context.proposed_actions.append(action)
     return {
@@ -258,6 +290,7 @@ def propose_application_change(
         "from_status": "", "to_status": target_status,
         "expected_version": expected_version, "requires_confirmation": True,
         "expires_at": action["expires_at"], "idempotent_replay": result["idempotent_replay"],
+        "action_type": normalized_type,
     }
 
 
@@ -276,7 +309,7 @@ def confirm_application_change(action_id: str) -> dict[str, Any]:
             "reason_code": "CONFIRMATION_REQUIRED",
             "message": "必须通过确认卡片的结构化第二次请求执行",
         }
-    result = context.services.pending_actions.confirm_application_transition(
+    result = context.services.pending_actions.confirm_pending_action(
         candidate_id=context.candidate["candidate_id"],
         actor_username=context.actor_username,
         action_id=action_id,
@@ -286,12 +319,18 @@ def confirm_application_change(action_id: str) -> dict[str, Any]:
     transition = action["result"]
     return {
         "action_id": action_id,
+        "action_type": transition.get("action_type", action["action_type"]),
         "application_id": transition["application_id"],
         "from_status": transition["from_status"],
         "to_status": transition["to_status"],
         "resulting_version": transition["resulting_version"],
         "idempotent_replay": result["idempotent_replay"],
         "persisted": True,
+        **{
+            key: transition[key]
+            for key in ("completed_round_id", "next_round_id", "task_id")
+            if key in transition
+        },
     }
 
 
@@ -307,3 +346,11 @@ CAREER_TOOLS = [
     propose_application_change,
     confirm_application_change,
 ]
+
+CAREER_TOOL_CATALOG = {item.name: item for item in CAREER_TOOLS}
+CAREER_TOOL_NAMES = tuple(CAREER_TOOL_CATALOG)
+
+
+def enabled_tools_sha256(names: list[str] | tuple[str, ...]) -> str:
+    canonical = json.dumps(sorted(set(names)), ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()

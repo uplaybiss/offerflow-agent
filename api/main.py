@@ -54,7 +54,7 @@ def create_app(
     if bootstrap_users:
         service_container.auth.bootstrap_local_users()
 
-    app = FastAPI(title="OfferFlow API", version="5.0.0-phase5")
+    app = FastAPI(title="OfferFlow API", version="5.1.0-rc1")
     app.state.services = service_container
     app.add_middleware(
         SessionMiddleware,

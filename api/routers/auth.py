@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, Request, Response
 from pydantic import BaseModel, ConfigDict, Field
@@ -20,9 +20,9 @@ class LoginBody(BaseModel):
 
 class CreateUserBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    username: str
-    password: str
-    role: str = "user"
+    username: str = Field(min_length=1, max_length=32)
+    password: str = Field(min_length=1, max_length=128)
+    role: Literal["admin", "user"] = "user"
 
 
 @router.post("/login")

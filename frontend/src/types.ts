@@ -24,7 +24,7 @@ export type MatchResult = {
   heuristic: { version: string; strong_required_coverage: number; match_required_coverage: number; disclaimer: string }
   hard_conditions: Array<{ name: string; status: string; actual: unknown; expected: unknown; evidence: string }>
   required_coverage: MatchCoverage; preferred_coverage: MatchCoverage
-  critical_gaps: string[]; other_gaps: string[]
+  missing_required_skills: string[]; missing_preferred_skills: string[]
 }
 
 export type Application = {
@@ -70,8 +70,13 @@ export type AgentMemory = {
 }
 
 export type PendingAction = {
-  action_id: string; chat_id: string; action_type: 'APPLICATION_TRANSITION'
-  payload: { application_id: string; target_status: string; expected_version: number; next_action: string; notes: string }
+  action_id: string; chat_id: string; action_type: 'APPLICATION_TRANSITION' | 'INTERVIEW_PROGRESSION'
+  payload: {
+    application_id: string; target_status?: string; expected_version?: number; next_action?: string; notes?: string
+    current_round_id?: string; current_round_result?: string; next_round_type?: string
+    next_round_title?: string; next_round_scheduled_at?: string; task_title?: string; task_due_at?: string
+    expected_application_version?: number; expected_interview_version?: number
+  }
   status: 'PENDING' | 'EXECUTED' | 'EXPIRED' | 'CANCELLED' | 'FAILED'
   expires_at: string; requires_confirmation: boolean; result: Record<string, unknown>; version: number
 }
@@ -79,19 +84,21 @@ export type PendingAction = {
 export type AgentTrace = {
   trace_id: string; status: string; model_name: string; prompt_version: string; toolset_version: string
   config_version_id: string; release_channel: string; release_generation: number
+  enabled_tools_sha256: string; enabled_tool_count: number
+  history_messages: number; history_messages_used: number
   first_chunk_ms: number | null; total_ms: number | null; input_tokens: number; output_tokens: number
   events: Array<{ sequence: number; event_type: string; tool_name: string; risk: string; status: string; duration_ms: number | null }>
 }
 
 export type AgentCapabilities = {
   available: boolean; provider: string; model: string; prompt_version: string; toolset_version: string
-  tool_count: number; stream_format: string; confirmation_required_for_writes: boolean; trace_policy: string
+  tool_count: number; enabled_tools: string[]; stream_format: string; confirmation_required_for_writes: boolean; trace_policy: string
   stable_version_id: string; canary_version_id: string; canary_percent: number; release_generation: number
 }
 
 export type AgentConfiguration = {
   version_id: string; label: string; status: 'DRAFT' | 'VALIDATED' | 'RELEASED'
-  settings: { model_name: string; max_retries: number; temperature: number; history_messages: number; prompt_version: string; toolset_version: string; rule_version: string }
+  settings: { model_name: string; max_retries: number; temperature: number; history_messages: number; prompt_version: string; toolset_version: string; rule_version: string; enabled_tools: string[] }
   settings_sha256: string; validation: { valid?: boolean; errors?: string[] }; revision: number
   created_at: string; validated_at: string
 }
@@ -112,6 +119,8 @@ export type RuntimeMetrics = {
 export type TraceRun = {
   run_id: string; trace_id: string; run_type: string; status: string; model_name: string
   config_version_id: string; release_channel: string; release_generation: number
+  enabled_tools_sha256: string; enabled_tool_count: number
+  history_messages: number; history_messages_used: number
   input_tokens: number; output_tokens: number; first_chunk_ms: number | null; total_ms: number | null
   created_at: string; finished_at: string
 }
@@ -120,6 +129,7 @@ export type EvaluationRun = {
   eval_run_id: string; suite_version: string; baseline_name: string; run_mode: 'EVAL' | 'REPLAY'
   status: string; passed: number; total: number; result_hash: string; baseline_status: string
   config_version_id: string; started_at: string; finished_at: string
+  evaluation_kind?: string; live_model?: boolean; sandbox?: boolean
   results?: Array<{ result_id: string; case_id: string; category: string; passed: boolean; duration_ms: number; expected: Record<string, unknown>; actual: Record<string, unknown> }>
 }
 
@@ -127,5 +137,6 @@ export type AgentOpsOverview = {
   release: AgentReleaseState; stable: AgentConfiguration | null; canary: AgentConfiguration | null
   versions: AgentConfiguration[]; metrics: RuntimeMetrics; recent_traces: TraceRun[]
   recent_evaluations: EvaluationRun[]; audit: Array<{ event_id: string; event_type: string; generation: number; version_id: string; created_at: string }>
+  tool_catalog: Array<{ name: string; risk: string }>
   deployment_mode: string; disclosure: string
 }

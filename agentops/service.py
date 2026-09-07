@@ -8,7 +8,7 @@ import re
 from typing import Any
 
 from agent.runner import PROMPT_VERSION
-from agent.tools import TOOLSET_VERSION
+from agent.tools import CAREER_TOOL_NAMES, TOOLSET_VERSION, TOOL_RISKS
 from agentops.store import AgentOpsStore
 from core.errors import ConflictError, ValidationError
 
@@ -16,7 +16,7 @@ from core.errors import ConflictError, ValidationError
 COMMAND_PATTERN = re.compile(r"^[A-Za-z0-9._:-]{8,100}$")
 ALLOWED_SETTING_KEYS = {
     "model_name", "max_retries", "temperature", "history_messages",
-    "prompt_version", "toolset_version", "rule_version",
+    "prompt_version", "toolset_version", "rule_version", "enabled_tools",
 }
 
 
@@ -44,6 +44,7 @@ class AgentOpsService:
     def __init__(self, store: AgentOpsStore) -> None:
         self.store = store
         self.store.initialize()
+        self.store.migrate_enabled_tools(list(CAREER_TOOL_NAMES))
         settings = self.default_settings()
         self.store.bootstrap(
             settings=settings,
@@ -69,6 +70,7 @@ class AgentOpsService:
             "prompt_version": PROMPT_VERSION,
             "toolset_version": TOOLSET_VERSION,
             "rule_version": os.getenv("MATCH_HEURISTIC_VERSION", "heuristic_v1") or "heuristic_v1",
+            "enabled_tools": list(CAREER_TOOL_NAMES),
         }
 
     @staticmethod
@@ -79,6 +81,16 @@ class AgentOpsService:
         unknown = sorted(set(settings) - ALLOWED_SETTING_KEYS)
         if unknown:
             errors.append(f"存在未允许的配置项：{', '.join(unknown)}")
+        enabled_tools = settings.get("enabled_tools")
+        if not isinstance(enabled_tools, list) or not enabled_tools:
+            errors.append("enabled_tools 必须是至少包含一个工具的数组")
+        else:
+            normalized_tools = [str(item) for item in enabled_tools]
+            if len(normalized_tools) != len(set(normalized_tools)):
+                errors.append("enabled_tools 不能包含重复工具")
+            unknown_tools = sorted(set(normalized_tools) - set(CAREER_TOOL_NAMES))
+            if unknown_tools:
+                errors.append(f"enabled_tools 包含未知工具：{', '.join(unknown_tools)}")
         model_name = str(settings.get("model_name") or "").strip()
         if not model_name or len(model_name) > 200:
             errors.append("model_name 不能为空且不能超过 200 字符")
@@ -246,6 +258,10 @@ class AgentOpsService:
             "recent_traces": quality.list_runs(limit=20),
             "recent_evaluations": quality.list_eval_runs(limit=20),
             "audit": self.store.list_audit(limit=30),
+            "tool_catalog": [
+                {"name": name, "risk": TOOL_RISKS[name]}
+                for name in CAREER_TOOL_NAMES
+            ],
             "deployment_mode": "local-single-process",
             "disclosure": "stable/canary 为确定性哈希分流；本地控制面不等同于分布式配置中心。",
         }

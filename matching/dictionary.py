@@ -6,6 +6,15 @@ from typing import Iterable
 
 
 DICTIONARY_VERSION = "skill_dictionary_v1"
+LANGUAGE_DICTIONARY_VERSION = "language_dictionary_v1"
+
+
+LANGUAGE_ALIASES: dict[str, tuple[str, ...]] = {
+    "english": ("english", "英语", "英文"),
+    "chinese": ("chinese", "中文", "汉语", "普通话"),
+    "japanese": ("japanese", "日语"),
+    "korean": ("korean", "韩语"),
+}
 
 
 @dataclass(frozen=True)
@@ -101,4 +110,57 @@ class SkillDictionary:
             "canonical_skill_count": len(self.definitions),
             "categories": sorted({item.skill_category for item in self.definitions}),
             "matching_rule": "canonical skills match; categories never imply equality",
+        }
+
+
+class LanguageDictionary:
+    def __init__(self, aliases: dict[str, tuple[str, ...]] = LANGUAGE_ALIASES) -> None:
+        self.aliases = aliases
+        self._canonical_by_alias = {
+            _key(alias): canonical
+            for canonical, values in aliases.items()
+            for alias in (*values, canonical)
+        }
+
+    def normalize(self, raw_language: str) -> dict[str, str]:
+        original = str(raw_language or "").strip()
+        key = _key(original)
+        canonical = self._canonical_by_alias.get(key)
+        if canonical:
+            rule = "language_alias_v1"
+        else:
+            canonical = re.sub(r"[^0-9a-zA-Z]+", "_", original.casefold()).strip("_")
+            if not canonical:
+                canonical = key.replace(" ", "_")
+            rule = "language_literal_v1"
+        return {
+            "raw_language": original,
+            "canonical_language": canonical,
+            "normalization_rule": rule,
+        }
+
+    def normalize_many(self, languages: Iterable[str]) -> list[dict[str, object]]:
+        grouped: dict[str, dict[str, object]] = {}
+        for language in languages:
+            item = self.normalize(str(language))
+            canonical = item["canonical_language"]
+            raw = item["raw_language"]
+            if not raw or not canonical:
+                continue
+            current = grouped.setdefault(canonical, {
+                "canonical_language": canonical,
+                "variants": [],
+                "normalization_rule": item["normalization_rule"],
+            })
+            variants = current["variants"]
+            assert isinstance(variants, list)
+            if raw not in variants:
+                variants.append(raw)
+        return list(grouped.values())
+
+    def summary(self) -> dict[str, object]:
+        return {
+            "version": LANGUAGE_DICTIONARY_VERSION,
+            "canonical_languages": sorted(self.aliases),
+            "matching_rule": "explicit aliases only; proficiency is never inferred",
         }
