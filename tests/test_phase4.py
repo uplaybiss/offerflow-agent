@@ -132,6 +132,7 @@ class Phase4TestCase(unittest.TestCase):
         self.assertEqual(set(self.app.state.services.database.table_names()), {
             "users", "candidate_profiles", "jobs", "applications", "application_events",
             "interview_rounds", "job_search_tasks", "agent_memories", "pending_actions",
+            "resume_versions", "chat_threads", "chat_messages",
         })
         with self.app.state.services.quality.connection() as connection:
             tables = {str(row["name"]) for row in connection.execute(
@@ -143,10 +144,11 @@ class Phase4TestCase(unittest.TestCase):
         expected = {
             "get_candidate_360", "search_jobs", "get_job_detail", "analyze_job_match", "compare_jobs",
             "analyze_skill_gaps", "query_applications", "list_upcoming_tasks",
-            "propose_application_change", "confirm_application_change",
+            "analyze_resume_for_job", "propose_application_change", "propose_task_change",
+            "confirm_application_change",
         }
         self.assertEqual({item.name for item in CAREER_TOOLS}, expected)
-        self.assertEqual(len(CAREER_TOOLS), 10)
+        self.assertEqual(len(CAREER_TOOLS), 12)
         self.assertTrue(all("candidate_id" not in item.args for item in CAREER_TOOLS))
 
     def test_agent_compare_tool_supports_five_while_existing_ui_api_keeps_four(self) -> None:
@@ -377,11 +379,12 @@ class Phase4TestCase(unittest.TestCase):
     def test_frontend_keeps_agent_page_after_sixth_agentops_page_is_added(self) -> None:
         src = Path(__file__).resolve().parents[1] / "frontend" / "src"
         sidebar = (src / "components" / "AppSidebar.vue").read_text(encoding="utf-8")
-        self.assertEqual(sidebar.count("{ id: '"), 6)
-        self.assertIn("Career Agent", sidebar)
+        self.assertEqual(sidebar.count("{ id: '"), 7)
+        self.assertIn("求职 Agent", sidebar)
         view = (src / "views" / "CareerAgentView.vue").read_text(encoding="utf-8")
-        for term in ("/api/agent/chat/stream", "/confirm", "待确认动作", "Trace 摘要", "current_application_id"):
+        for term in ("/api/agent/chat/stream", "/confirm", "待你确认", "最近对话", "current_application_id"):
             self.assertIn(term, view)
+        self.assertNotIn("Trace 摘要", view)
         api_source = (src / "api.ts").read_text(encoding="utf-8")
         self.assertIn("response.body.getReader", api_source)
 

@@ -263,7 +263,7 @@ class Phase5TestCase(unittest.TestCase):
         root = Path(__file__).resolve().parents[1]
         sidebar = (root / "frontend" / "src" / "components" / "AppSidebar.vue").read_text(encoding="utf-8")
         view = (root / "frontend" / "src" / "views" / "AgentOpsView.vue").read_text(encoding="utf-8")
-        self.assertEqual(sidebar.count("{ id: '"), 6)
+        self.assertEqual(sidebar.count("{ id: '"), 7)
         self.assertIn("adminOnly: true", sidebar)
         for term in ("generation CAS", "发布灰度", "回滚到此", "固定评测与回放", "Trace 时间线"):
             self.assertIn(term, view)
@@ -273,8 +273,8 @@ class Phase5TestCase(unittest.TestCase):
             for folder in (root / "core", root / "career", root / "agentops")
             for path in folder.rglob("*.py")
         )
-        for deferred in ("create table resume_versions", "create table candidate_skills"):
-            self.assertNotIn(deferred, active_source)
+        self.assertIn("create table if not exists resume_versions", active_source)
+        self.assertNotIn("create table candidate_skills", active_source)
 
 
 if __name__ == "__main__":

@@ -212,6 +212,72 @@ class PendingActionRepository:
             )
         return self.get(candidate_id=candidate_id, action_id=action_id), replayed
 
+    def create_task(
+        self,
+        *,
+        candidate_id: str,
+        actor_username: str,
+        chat_id: str,
+        payload: dict[str, Any],
+        request_hash: str,
+        expires_at: str,
+    ) -> tuple[dict[str, Any], bool]:
+        now = utc_now()
+        with self.database.transaction() as connection:
+            self._validate_task_links(connection, candidate_id, payload)
+            action_id, replayed = self._reuse_or_insert(
+                connection,
+                candidate_id=candidate_id,
+                actor_username=actor_username,
+                chat_id=chat_id,
+                action_type="TASK_CREATE",
+                payload=payload,
+                request_hash=request_hash,
+                expected_version=1,
+                expires_at=expires_at,
+                now=now,
+            )
+        return self.get(candidate_id=candidate_id, action_id=action_id), replayed
+
+    @staticmethod
+    def _validate_task_links(connection: Any, candidate_id: str, payload: dict[str, Any]) -> None:
+        job_id = str(payload.get("job_id") or "")
+        application_id = str(payload.get("application_id") or "")
+        interview_id = str(payload.get("interview_round_id") or "")
+        if job_id:
+            job = connection.execute(
+                "SELECT 1 FROM jobs WHERE candidate_id = ? AND job_id = ?",
+                (candidate_id, job_id),
+            ).fetchone()
+            if not job:
+                raise NotFoundError("关联岗位不存在")
+        application = None
+        if application_id:
+            application = connection.execute(
+                "SELECT job_id FROM applications WHERE candidate_id = ? AND application_id = ?",
+                (candidate_id, application_id),
+            ).fetchone()
+            if not application:
+                raise NotFoundError("关联投递不存在")
+            if job_id and str(application["job_id"]) != job_id:
+                raise ValidationError("岗位与投递不属于同一业务链")
+        interview = None
+        if interview_id:
+            interview = connection.execute(
+                """
+                SELECT r.application_id, a.job_id FROM interview_rounds r
+                JOIN applications a ON a.application_id = r.application_id
+                WHERE a.candidate_id = ? AND r.round_id = ?
+                """,
+                (candidate_id, interview_id),
+            ).fetchone()
+            if not interview:
+                raise NotFoundError("关联面试不存在")
+            if application_id and str(interview["application_id"]) != application_id:
+                raise ValidationError("投递与面试不属于同一业务链")
+            if job_id and str(interview["job_id"]) != job_id:
+                raise ValidationError("岗位与面试不属于同一业务链")
+
     @staticmethod
     def _execute_application_transition(
         connection: Any,
@@ -443,6 +509,44 @@ class PendingActionRepository:
             "task_id": task_id,
         }
 
+    @classmethod
+    def _execute_task_create(
+        cls,
+        connection: Any,
+        *,
+        action_id: str,
+        candidate_id: str,
+        payload: dict[str, Any],
+        now: str,
+    ) -> dict[str, Any]:
+        cls._validate_task_links(connection, candidate_id, payload)
+        task_id = new_id("TSK")
+        connection.execute(
+            """
+            INSERT INTO job_search_tasks (
+                task_id, candidate_id, job_id, application_id, interview_round_id,
+                title, description, task_type, status, priority, due_at, origin,
+                suggestion_key, suggestion_source, suggestion_payload_json,
+                created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'TODO', ?, ?, 'MANUAL', '', '', '{}', ?, ?)
+            """,
+            (
+                task_id, candidate_id, payload.get("job_id") or None,
+                payload.get("application_id") or None,
+                payload.get("interview_round_id") or None,
+                payload["title"], payload.get("description", ""),
+                payload["task_type"], payload["priority"], payload["due_at"], now, now,
+            ),
+        )
+        return {
+            "action_type": "TASK_CREATE",
+            "task_id": task_id,
+            "title": payload["title"],
+            "task_type": payload["task_type"],
+            "priority": payload["priority"],
+            "due_at": payload["due_at"],
+        }
+
     def confirm_and_execute(
         self,
         *,
@@ -454,7 +558,8 @@ class PendingActionRepository:
     ) -> tuple[dict[str, Any], dict[str, Any], bool]:
         now = utc_now()
         replayed = False
-        application_id = ""
+        business_id = ""
+        action_type = ""
         with self.database.transaction() as connection:
             action = connection.execute(
                 "SELECT * FROM pending_actions WHERE candidate_id = ? AND action_id = ?",
@@ -465,7 +570,8 @@ class PendingActionRepository:
             if str(action["actor_username"]) != actor_username:
                 raise PermissionError("确认人必须与提议动作的账号一致")
             payload = json_load(action["payload_json"], {})
-            application_id = str(payload.get("application_id") or "")
+            action_type = str(action["action_type"])
+            business_id = str(payload.get("application_id") or "")
             if str(action["status"]) == "EXECUTED":
                 replayed = True
             else:
@@ -484,7 +590,6 @@ class PendingActionRepository:
                     f"{raw_grant}|{action_id}|{actor_username}|{canonical_hash}".encode("utf-8")
                 ).hexdigest()
 
-                action_type = str(action["action_type"])
                 if action_type == "APPLICATION_TRANSITION":
                     result = self._execute_application_transition(
                         connection,
@@ -506,6 +611,15 @@ class PendingActionRepository:
                         canonical_hash=canonical_hash,
                         now=now,
                     )
+                elif action_type == "TASK_CREATE":
+                    result = self._execute_task_create(
+                        connection,
+                        action_id=action_id,
+                        candidate_id=candidate_id,
+                        payload=payload,
+                        now=now,
+                    )
+                    business_id = str(result["task_id"])
                 else:
                     raise ValidationError("待确认动作类型无效")
                 connection.execute(
@@ -521,13 +635,19 @@ class PendingActionRepository:
 
         action_result = self.get(candidate_id=candidate_id, action_id=action_id)
         with self.database.connection() as connection:
-            application = connection.execute(
-                "SELECT * FROM applications WHERE candidate_id = ? AND application_id = ?",
-                (candidate_id, application_id),
-            ).fetchone()
-        if not application:
-            raise NotFoundError("投递记录不存在")
-        return action_result, {key: application[key] for key in application.keys()}, replayed
+            if action_type == "TASK_CREATE":
+                business = connection.execute(
+                    "SELECT * FROM job_search_tasks WHERE candidate_id = ? AND task_id = ?",
+                    (candidate_id, action_result["result"].get("task_id") or business_id),
+                ).fetchone()
+            else:
+                business = connection.execute(
+                    "SELECT * FROM applications WHERE candidate_id = ? AND application_id = ?",
+                    (candidate_id, business_id),
+                ).fetchone()
+        if not business:
+            raise NotFoundError("确认动作对应的业务对象不存在")
+        return action_result, {key: business[key] for key in business.keys()}, replayed
 
     def cancel(self, *, candidate_id: str, actor_username: str, action_id: str) -> dict[str, Any]:
         now = utc_now()

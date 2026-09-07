@@ -112,9 +112,9 @@ def run() -> None:
                 raise RuntimeError("模型解释改变了确定性事实")
             checks.append("模型仅解释确定性结果，不参与事实与等级决策")
 
-            if len(app.state.services.database.table_names()) != 9:
-                raise RuntimeError("Phase 4 数据表数量异常")
-            checks.append("Phase 2 功能在 Phase 4 的 9 张业务表结构上回归通过")
+            if len(app.state.services.database.table_names()) != 12:
+                raise RuntimeError("v5.2 数据表数量异常")
+            checks.append("Phase 2 功能在 v5.2 的 12 张业务表结构上回归通过")
 
             print("PHASE 2 ACCEPTANCE: PASS")
             for index, item in enumerate(checks, 1):

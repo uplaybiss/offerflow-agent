@@ -14,7 +14,7 @@ from agent.tools import CAREER_TOOL_CATALOG, CAREER_TOOL_NAMES
 from core.errors import ExternalServiceError
 
 
-PROMPT_VERSION = "career-agent-prompt-v1"
+PROMPT_VERSION = "career-agent-prompt-v2"
 
 
 @dataclass

@@ -20,7 +20,7 @@ async function login() {
 
 <template>
   <main class="login-page">
-    <section class="login-intro"><span class="eyebrow">OFFERFLOW · PHASE 3</span><h1>把秋招进度，<br />变成一条清晰的路。</h1><p>从岗位与面试时间生成可追溯建议；所有写入仍由你确认，所有记录仍可编辑。</p></section>
+    <section class="login-intro"><span class="eyebrow">OFFERFLOW</span><h1>把真实 JD，<br />变成清晰的求职行动。</h1><p>分析岗位匹配，维护定制简历，并持续记录投递、面试和待办。</p></section>
     <form class="login-card" @submit.prevent="login"><h2>欢迎回来</h2><p>登录你的求职工作台</p><label>用户名<input v-model="username" autocomplete="username" /></label><label>密码<input v-model="password" type="password" autocomplete="current-password" /></label><p v-if="error" class="error">{{ error }}</p><button class="primary" :disabled="loading">{{ loading ? '登录中…' : '进入工作台' }}</button><small>本地演示账号：demo / demo</small></form>
   </main>
 </template>

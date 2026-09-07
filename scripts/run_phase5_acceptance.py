@@ -173,14 +173,16 @@ def run() -> None:
             }:
                 raise RuntimeError("AgentOps 表结构不符合 Phase 5 边界")
             sidebar = (Path(__file__).resolve().parents[1] / "frontend" / "src" / "components" / "AppSidebar.vue").read_text(encoding="utf-8")
-            if sidebar.count("{ id: '") != 6 or "adminOnly: true" not in sidebar:
-                raise RuntimeError("前端没有管理员专属第六页面")
-            checks.append("AgentOps API 与第六页面仅管理员可见，业务库仍为 9 张表")
+            if sidebar.count("{ id: '") != 7 or "adminOnly: true" not in sidebar:
+                raise RuntimeError("前端没有六个用户页面和管理员专属 AgentOps")
+            if len(app.state.services.database.table_names()) != 12:
+                raise RuntimeError("v5.2 业务表数量异常")
+            checks.append("AgentOps API 与管理页面仅管理员可见，六个用户页面及 12 张业务表保持可用")
 
             print("PHASE 5 ACCEPTANCE: PASS")
             for index, item in enumerate(checks, 1):
                 print(f"  {index}. PASS - {item}")
-            print("  eval=8/8, replay=MATCH, generations=1->2->3, channels=stable+canary, pages=6")
+            print("  eval=8/8, replay=MATCH, generations=1->2->3, channels=stable+canary, user_pages=6")
         finally:
             admin.close()
             demo.close()

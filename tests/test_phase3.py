@@ -13,36 +13,13 @@ from fastapi.testclient import TestClient
 from api.main import create_app
 from core.database import Database
 from core.time import configured_timezone
-from sources.adapters import SourceAdapterRegistry
-
-
-class FakeCareerAdapter:
-    key = "fake-career"
-    display_name = "Fake Career Adapter"
-
-    def fetch_job(self, job: dict[str, Any]) -> dict[str, Any]:
-        return {
-            "title": f"{job['title']}（官网更新）",
-            "deadline": "2031-01-31",
-            "required_skills": ["Python", "FastAPI"],
-            "ignored_field": "must not escape the adapter contract",
-        }
-
-
-class BrokenCareerAdapter:
-    key = "broken-career"
-    display_name = "Broken Career Adapter"
-
-    def fetch_job(self, job: dict[str, Any]) -> dict[str, Any]:
-        raise RuntimeError("synthetic adapter failure")
 
 
 class Phase3TestCase(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.db_path = str(Path(self.temp.name) / "phase3.db")
-        registry = SourceAdapterRegistry([FakeCareerAdapter(), BrokenCareerAdapter()])
-        self.app = create_app(db_path=self.db_path, session_secret="phase3-test", source_registry=registry)
+        self.app = create_app(db_path=self.db_path, session_secret="phase3-test")
         self.client = TestClient(self.app)
         login = self.client.post("/api/auth/login", json={"username": "demo", "password": "demo"})
         self.assertEqual(login.status_code, 200)
@@ -128,7 +105,7 @@ class Phase3TestCase(unittest.TestCase):
             connection.close()
         database = Database(old_path)
         database.initialize()
-        self.assertEqual(len(database.table_names()), 9)
+        self.assertEqual(len(database.table_names()), 12)
         with database.connection() as connection:
             columns = {str(row["name"]) for row in connection.execute("PRAGMA table_info(job_search_tasks)")}
             indexes = {str(row["name"]) for row in connection.execute("PRAGMA index_list(job_search_tasks)")}
@@ -236,63 +213,23 @@ class Phase3TestCase(unittest.TestCase):
         admin.close()
         other.close()
 
-    def test_unavailable_or_broken_source_adapter_never_changes_job(self) -> None:
-        unavailable = self.create_job(
-            source_type="COMPANY_CAREER",
-            source_name="企业招聘官网",
-            source_metadata={"source_contract": {"adapter_key": "not-installed", "source_company_id": "co-1"}},
-        )
-        before = self.client.get(f"/api/jobs/{unavailable['job_id']}").json()["job"]
-        result = self.client.post(f"/api/jobs/{unavailable['job_id']}/source-refresh")
-        self.assertEqual(result.status_code, 200, result.text)
-        self.assertEqual(result.json()["status"], "UNAVAILABLE")
-        self.assertTrue(result.json()["job_unchanged"])
-        self.assertEqual(self.client.get(f"/api/jobs/{unavailable['job_id']}").json()["job"], before)
-
-        broken = self.create_job(
-            source_type="COMPANY_CAREER",
-            source_metadata={"source_contract": {"adapter_key": "broken-career"}},
-        )
-        broken_before = self.client.get(f"/api/jobs/{broken['job_id']}").json()["job"]
-        failed = self.client.post(f"/api/jobs/{broken['job_id']}/source-refresh")
-        self.assertEqual(failed.status_code, 200, failed.text)
-        self.assertEqual(failed.json()["status"], "ERROR")
-        self.assertEqual(self.client.get(f"/api/jobs/{broken['job_id']}").json()["job"], broken_before)
-
-    def test_source_adapter_only_previews_then_user_patch_confirms_update(self) -> None:
-        job = self.create_job(
-            source_type="COMPANY_CAREER",
-            source_metadata={"source_contract": {"adapter_key": "fake-career", "source_company_id": "co-2"}},
-        )
-        preview = self.client.post(f"/api/jobs/{job['job_id']}/source-refresh")
-        self.assertEqual(preview.status_code, 200, preview.text)
-        body = preview.json()
-        self.assertEqual(body["status"], "PREVIEW")
-        self.assertFalse(body["persisted"])
-        self.assertNotIn("ignored_field", body["update_preview"])
+    def test_v52_has_no_live_source_refresh_endpoint(self) -> None:
+        job = self.create_job(source_type="COMPANY_CAREER", source_name="企业招聘官网")
+        response = self.client.post(f"/api/jobs/{job['job_id']}/source-refresh")
+        self.assertIn(response.status_code, {404, 405})
         self.assertEqual(self.client.get(f"/api/jobs/{job['job_id']}").json()["job"]["title"], job["title"])
-        confirmed = self.client.patch(f"/api/jobs/{job['job_id']}", json={
-            "version": job["version"], **body["update_preview"],
-        })
-        self.assertEqual(confirmed.status_code, 200, confirmed.text)
-        updated = confirmed.json()["job"]
-        self.assertTrue(updated["title"].endswith("（官网更新）"))
-        manual = self.client.patch(f"/api/jobs/{job['job_id']}", json={
-            "version": updated["version"], "title": "我手工修正后的岗位名",
-        })
-        self.assertEqual(manual.status_code, 200, manual.text)
-        self.assertEqual(manual.json()["job"]["title"], "我手工修正后的岗位名")
 
     def test_frontend_keeps_phase3_features_after_phase5_agentops_addition(self) -> None:
         src = Path(__file__).resolve().parents[1] / "frontend" / "src"
         sidebar = (src / "components" / "AppSidebar.vue").read_text(encoding="utf-8")
-        self.assertEqual(sidebar.count("{ id: '"), 6)
+        self.assertEqual(sidebar.count("{ id: '"), 7)
         workbench = (src / "views" / "WorkbenchView.vue").read_text(encoding="utf-8")
         for term in ("task-suggestions", "application_funnel", "overdue_tasks", "recent_interviews"):
             self.assertIn(term, workbench)
         jobs = (src / "views" / "JobCenterView.vue").read_text(encoding="utf-8")
-        for term in ("/api/jobs/compare", "source-refresh", "saveJob", "source_contract"):
+        for term in ("/api/jobs/compare", "saveJob", "optimizeResume"):
             self.assertIn(term, jobs)
+        self.assertNotIn("source-refresh", jobs)
         self.assertTrue(any(path.name == "CareerAgentView.vue" for path in src.rglob("*.vue")))
 
 

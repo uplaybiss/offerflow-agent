@@ -44,7 +44,11 @@ class AgentOpsService:
     def __init__(self, store: AgentOpsStore) -> None:
         self.store = store
         self.store.initialize()
-        self.store.migrate_enabled_tools(list(CAREER_TOOL_NAMES))
+        self.store.migrate_enabled_tools(
+            list(CAREER_TOOL_NAMES),
+            toolset_version=TOOLSET_VERSION,
+            prompt_version=PROMPT_VERSION,
+        )
         settings = self.default_settings()
         self.store.bootstrap(
             settings=settings,

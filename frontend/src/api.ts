@@ -19,6 +19,7 @@ export const api = {
   post: <T>(path: string, body?: unknown) => request<T>(path, { method: 'POST', body: body === undefined ? undefined : JSON.stringify(body) }),
   put: <T>(path: string, body: unknown) => request<T>(path, { method: 'PUT', body: JSON.stringify(body) }),
   patch: <T>(path: string, body: unknown) => request<T>(path, { method: 'PATCH', body: JSON.stringify(body) }),
+  delete: <T>(path: string) => request<T>(path, { method: 'DELETE' }),
   upload: <T>(path: string, body: FormData) => request<T>(path, { method: 'POST', body }),
   stream: async (path: string, body: unknown, onEvent: (event: Record<string, unknown>) => void) => {
     const response = await fetch(path, {

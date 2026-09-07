@@ -304,10 +304,16 @@ class FinalHardeningTestCase(unittest.TestCase):
             "version_id": config["version_id"], "channel": "STABLE", "canary_percent": 0,
             "expected_generation": release["generation"], "command_id": "hardening:history:publish",
         }, "admin")
-        history = [{"role": "user", "content": f"message-{index}"} for index in range(20)]
+        self.app.state.services.chats.create(
+            self.candidate["candidate_id"], {"chat_id": "chat:history-twenty"}
+        )
+        for index in range(20):
+            self.app.state.services.chats.append(
+                self.candidate["candidate_id"], "chat:history-twenty", "USER", f"message-{index}"
+            )
         result = self.app.state.services.agent.run(
             candidate=self.candidate, actor_username="demo",
-            payload={"chat_id": "chat:history-twenty", "message": "继续", "history": history},
+            payload={"chat_id": "chat:history-twenty", "message": "继续"},
         )
         self.assertEqual(len(self.runner.histories[-1]), 20)
         self.assertEqual(result["runtime"]["history_messages_used"], 20)

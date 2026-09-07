@@ -84,6 +84,27 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_jobs_external_identity
 CREATE INDEX IF NOT EXISTS idx_jobs_candidate_status
     ON jobs(candidate_id, status, is_favorite, deadline, updated_at DESC);
 
+CREATE TABLE IF NOT EXISTS resume_versions (
+    resume_version_id TEXT PRIMARY KEY,
+    candidate_id TEXT NOT NULL,
+    source_job_id TEXT,
+    title TEXT NOT NULL,
+    base_resume_hash TEXT NOT NULL,
+    content_text TEXT NOT NULL,
+    structured_json TEXT NOT NULL DEFAULT '{}',
+    created_from TEXT NOT NULL
+        CHECK (created_from IN ('AI_TAILORED', 'MANUAL')),
+    archived INTEGER NOT NULL DEFAULT 0 CHECK (archived IN (0, 1)),
+    version INTEGER NOT NULL DEFAULT 1 CHECK (version >= 1),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY(candidate_id) REFERENCES candidate_profiles(candidate_id) ON DELETE CASCADE,
+    FOREIGN KEY(source_job_id) REFERENCES jobs(job_id) ON DELETE SET NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_resume_versions_candidate_updated
+    ON resume_versions(candidate_id, archived, updated_at DESC);
+
 CREATE TABLE IF NOT EXISTS applications (
     application_id TEXT PRIMARY KEY,
     candidate_id TEXT NOT NULL,
@@ -207,13 +228,38 @@ CREATE TABLE IF NOT EXISTS agent_memories (
 CREATE INDEX IF NOT EXISTS idx_agent_memories_candidate_updated
     ON agent_memories(candidate_id, updated_at DESC);
 
+CREATE TABLE IF NOT EXISTS chat_threads (
+    chat_id TEXT PRIMARY KEY,
+    candidate_id TEXT NOT NULL,
+    title TEXT NOT NULL DEFAULT '新对话',
+    archived INTEGER NOT NULL DEFAULT 0 CHECK (archived IN (0, 1)),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY(candidate_id) REFERENCES candidate_profiles(candidate_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_chat_threads_candidate_updated
+    ON chat_threads(candidate_id, archived, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS chat_messages (
+    message_id TEXT PRIMARY KEY,
+    chat_id TEXT NOT NULL,
+    role TEXT NOT NULL CHECK (role IN ('USER', 'ASSISTANT')),
+    content TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY(chat_id) REFERENCES chat_threads(chat_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_chat_messages_thread_created
+    ON chat_messages(chat_id, created_at, message_id);
+
 CREATE TABLE IF NOT EXISTS pending_actions (
     action_id TEXT PRIMARY KEY,
     candidate_id TEXT NOT NULL,
     actor_username TEXT NOT NULL,
     chat_id TEXT NOT NULL,
     action_type TEXT NOT NULL
-        CHECK (action_type IN ('APPLICATION_TRANSITION', 'INTERVIEW_PROGRESSION')),
+        CHECK (action_type IN ('APPLICATION_TRANSITION', 'INTERVIEW_PROGRESSION', 'TASK_CREATE')),
     payload_json TEXT NOT NULL,
     request_hash TEXT NOT NULL,
     expected_version INTEGER NOT NULL CHECK (expected_version >= 1),
@@ -320,7 +366,7 @@ class Database:
         row = connection.execute(
             "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'pending_actions'"
         ).fetchone()
-        if not row or "INTERVIEW_PROGRESSION" in str(row["sql"]):
+        if not row or "TASK_CREATE" in str(row["sql"]):
             return
         connection.execute("BEGIN IMMEDIATE")
         try:
@@ -333,7 +379,7 @@ class Database:
                     actor_username TEXT NOT NULL,
                     chat_id TEXT NOT NULL,
                     action_type TEXT NOT NULL
-                        CHECK (action_type IN ('APPLICATION_TRANSITION', 'INTERVIEW_PROGRESSION')),
+                        CHECK (action_type IN ('APPLICATION_TRANSITION', 'INTERVIEW_PROGRESSION', 'TASK_CREATE')),
                     payload_json TEXT NOT NULL,
                     request_hash TEXT NOT NULL,
                     expected_version INTEGER NOT NULL CHECK (expected_version >= 1),

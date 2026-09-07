@@ -346,13 +346,13 @@ class Phase2TestCase(unittest.TestCase):
     def test_frontend_keeps_phase2_features_after_phase5_agentops_addition(self) -> None:
         src = Path(__file__).resolve().parents[1] / "frontend" / "src"
         sidebar = (src / "components" / "AppSidebar.vue").read_text(encoding="utf-8")
-        self.assertEqual(sidebar.count("{ id: '"), 6)
+        self.assertEqual(sidebar.count("{ id: '"), 7)
         self.assertTrue(any(path.name == "CareerAgentView.vue" for path in src.rglob("*.vue")))
         candidate = (src / "views" / "Candidate360View.vue").read_text(encoding="utf-8")
         for term in ("resume/extract", "resume/preview", "preview-flag", "async function save"):
             self.assertIn(term, candidate)
         jobs = (src / "views" / "JobCenterView.vue").read_text(encoding="utf-8")
-        for term in ("jd/preview", "matchResult.heuristic.disclaimer", "hard_conditions", "required_coverage", "/match"):
+        for term in ("jd/preview", "结果用于梳理事实", "hard_conditions", "required_coverage", "/match"):
             self.assertIn(term, jobs)
 
 

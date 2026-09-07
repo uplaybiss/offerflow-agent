@@ -184,5 +184,41 @@ class AgentChatBody(StrictBody):
     current_task_id: str = Field(default="", max_length=100)
 
 
+class ChatThreadCreateBody(StrictBody):
+    chat_id: str = Field(default="", max_length=100)
+    title: str = Field(default="新对话", max_length=100)
+
+
+class ChatThreadUpdateBody(StrictBody):
+    title: str | None = Field(default=None, max_length=100)
+    archived: bool | None = None
+
+
+class ResumeVersionCreateBody(StrictBody):
+    source_job_id: str = Field(default="", max_length=100)
+    title: str = Field(min_length=1, max_length=200)
+    content_text: str = Field(min_length=1, max_length=500_000)
+    structured: dict[str, Any] = Field(default_factory=dict)
+    created_from: Literal["AI_TAILORED", "MANUAL"] = "MANUAL"
+
+
+class ResumeVersionUpdateBody(StrictBody):
+    version: int = Field(ge=1)
+    source_job_id: str | None = Field(default=None, max_length=100)
+    title: str | None = Field(default=None, min_length=1, max_length=200)
+    content_text: str | None = Field(default=None, min_length=1, max_length=500_000)
+    structured: dict[str, Any] | None = None
+    archived: bool | None = None
+
+
+class ResumeVersionCopyBody(StrictBody):
+    title: str = Field(default="", max_length=200)
+
+
+class ResumeTailoringBody(StrictBody):
+    job_id: str = Field(min_length=1, max_length=100)
+    resume_version_id: str = Field(default="", max_length=100)
+
+
 def body_dict(body: BaseModel) -> dict[str, Any]:
     return body.model_dump(mode="json", exclude_none=True)

@@ -226,14 +226,15 @@ def run() -> None:
             if set(app.state.services.database.table_names()) != {
                 "users", "candidate_profiles", "jobs", "applications", "application_events",
                 "interview_rounds", "job_search_tasks", "agent_memories", "pending_actions",
+                "resume_versions", "chat_threads", "chat_messages",
             }:
-                raise RuntimeError("Phase 4 业务表不符合 9 表边界")
-            checks.append("业务库为 9 张表，Phase 5/RAG/ResumeVersion/CandidateSkill 仍未提前实现")
+                raise RuntimeError("v5.2 业务表不符合 12 表边界")
+            checks.append("业务库为 12 张表；RAG/CandidateSkill 与自动岗位采集仍未实现")
 
             print("PHASE 4 ACCEPTANCE: PASS")
             for index, item in enumerate(checks, 1):
                 print(f"  {index}. PASS - {item}")
-            print(f"  eval={evaluation['passed']}/{evaluation['total']}, replay={replayed_eval['baseline']['status']}, business_tables=9, tools=10, pages=5")
+            print(f"  eval={evaluation['passed']}/{evaluation['total']}, replay={replayed_eval['baseline']['status']}, business_tables=12, tools=12, user_pages=6")
         finally:
             if eval_client is not None:
                 eval_client.close()

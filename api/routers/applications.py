@@ -12,9 +12,15 @@ from api.schemas import (
     InterviewUpdateBody,
     body_dict,
 )
+from career.models import APPLICATION_TRANSITIONS
 
 
 router = APIRouter(prefix="/api", tags=["applications"])
+
+
+@router.get("/applications/transitions/config")
+def transition_config(_: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
+    return {"transitions": {status: sorted(targets) for status, targets in APPLICATION_TRANSITIONS.items()}}
 
 
 @router.get("/applications")

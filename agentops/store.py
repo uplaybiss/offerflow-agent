@@ -110,8 +110,14 @@ class AgentOpsStore:
                 (utc_now(),),
             )
 
-    def migrate_enabled_tools(self, enabled_tools: list[str]) -> int:
-        """Add the pre-whitelist semantic (all tools enabled) to legacy immutable configs."""
+    def migrate_enabled_tools(
+        self,
+        enabled_tools: list[str],
+        *,
+        toolset_version: str = "",
+        prompt_version: str = "",
+    ) -> int:
+        """Migrate stored runtime contracts when the application tool schema evolves."""
         migrated = 0
         with self.transaction() as connection:
             rows = connection.execute(
@@ -123,9 +129,29 @@ class AgentOpsStore:
             now = utc_now()
             for row in rows:
                 settings = _load(row["settings_json"], {})
-                if not isinstance(settings, dict) or "enabled_tools" in settings:
+                if not isinstance(settings, dict):
                     continue
-                settings["enabled_tools"] = list(enabled_tools)
+                changed: list[str] = []
+                configured = settings.get("enabled_tools")
+                if not isinstance(configured, list):
+                    settings["enabled_tools"] = list(enabled_tools)
+                    changed.append("enabled_tools")
+                elif toolset_version and settings.get("toolset_version") != toolset_version:
+                    # A configuration that contained the complete previous catalog keeps
+                    # the same "all product tools" semantic after a version upgrade.
+                    if len(configured) >= 10:
+                        settings["enabled_tools"] = list(enabled_tools)
+                    else:
+                        settings["enabled_tools"] = [name for name in configured if name in enabled_tools]
+                    changed.append("enabled_tools")
+                if toolset_version and settings.get("toolset_version") != toolset_version:
+                    settings["toolset_version"] = toolset_version
+                    changed.append("toolset_version")
+                if prompt_version and settings.get("prompt_version") != prompt_version:
+                    settings["prompt_version"] = prompt_version
+                    changed.append("prompt_version")
+                if not changed:
+                    continue
                 serialized = _dump(settings)
                 digest = hashlib.sha256(serialized.encode("utf-8")).hexdigest()
                 connection.execute(
@@ -141,7 +167,7 @@ class AgentOpsStore:
                     """,
                     (
                         new_id("AUD"), generation, str(row["version_id"]),
-                        "system-migration", _dump({"added": "enabled_tools", "semantic": "all-existing-tools"}), now,
+                        "system-migration", _dump({"updated": changed, "semantic": "runtime-contract-migration"}), now,
                     ),
                 )
                 migrated += 1

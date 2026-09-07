@@ -42,10 +42,8 @@ def run() -> None:
                 "employment_type": "全职", "recruitment_cycle": "2027 届秋招", "graduation_year": "2027",
                 "deadline": deadline, "description_text": "要求 Python 与 FastAPI，Vue 3 优先",
                 "required_skills": ["Python", "FastAPI"], "preferred_skills": ["Vue 3"], "is_favorite": True,
-                "source_type": "COMPANY_CAREER", "source_name": "企业招聘官网",
-                "source_url": "https://example.test/jobs/p3", "external_job_id": "P3-ACCEPT-1",
-                "company_career_url": "https://example.test/careers",
-                "source_metadata": {"source_contract": {"adapter_key": "not-installed", "source_company_id": "accept-co"}},
+                "source_type": "JD_PASTE", "source_name": "用户粘贴的合成 JD",
+                "external_job_id": "P3-ACCEPT-1",
             }), 201)["job"]
             application = expect(client.post("/api/applications", json={
                 "job_id": job["job_id"], "status": "PLANNED", "next_action": "准备投递", "notes": "",
@@ -103,11 +101,11 @@ def run() -> None:
             checks.append("岗位对比展示岗位事实、确定性匹配和技能缺口")
 
             before = expect(client.get(f"/api/jobs/{job['job_id']}"))["job"]
-            refresh = expect(client.post(f"/api/jobs/{job['job_id']}/source-refresh"))
+            refresh = client.post(f"/api/jobs/{job['job_id']}/source-refresh")
             after = expect(client.get(f"/api/jobs/{job['job_id']}"))["job"]
-            if refresh["status"] != "UNAVAILABLE" or before != after:
-                raise RuntimeError("适配器不可用时改变了岗位或阻断核心流程")
-            checks.append("来源适配器不可用时岗位不变且核心流程继续可用")
+            if refresh.status_code not in {404, 405} or before != after:
+                raise RuntimeError("v5.2 不应保留岗位来源刷新入口或改变岗位")
+            checks.append("在线岗位刷新入口已删除，已保存岗位保持不变")
 
             updated = expect(client.patch(f"/api/jobs/{job['job_id']}", json={
                 "version": job["version"], "title": "用户手工修正后的岗位名",
@@ -116,14 +114,14 @@ def run() -> None:
                 raise RuntimeError("单条岗位手工更新失败")
             checks.append("单条岗位始终可由用户手工更新")
 
-            if len(app.state.services.database.table_names()) != 9:
-                raise RuntimeError("Phase 4 数据表数量异常")
-            checks.append("Phase 3 功能在 Phase 4 新增 AgentMemory/PendingAction 后回归通过")
+            if len(app.state.services.database.table_names()) != 12:
+                raise RuntimeError("v5.2 数据表数量异常")
+            checks.append("Phase 3 功能在 v5.2 新增简历版本与会话表后回归通过")
 
             print("PHASE 3 ACCEPTANCE: PASS")
             for index, item in enumerate(checks, 1):
                 print(f"  {index}. PASS - {item}")
-            print(f"  suggestions={len(suggestions)}, tasks={len(expect(client.get('/api/tasks'))['items'])}, tables=9")
+            print(f"  suggestions={len(suggestions)}, tasks={len(expect(client.get('/api/tasks'))['items'])}, tables=12")
 
 
 if __name__ == "__main__":

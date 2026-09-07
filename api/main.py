@@ -12,12 +12,11 @@ from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 
 from agent.runner import AgentRunner
-from api.routers import agent, agentops, applications, auth, candidate, health, jobs, matching, parsing, sources, suggestions, tasks
+from api.routers import agent, agentops, applications, auth, candidate, chats, health, jobs, matching, parsing, resumes, suggestions, tasks
 from core.container import build_services
 from core.database import Database, database_path
 from core.errors import OfferFlowError
 from parsing.llm import LlmClient
-from sources.adapters import SourceAdapterRegistry
 
 
 load_dotenv(Path(__file__).resolve().parents[1] / ".env")
@@ -29,7 +28,6 @@ def create_app(
     session_secret: str | None = None,
     bootstrap_users: bool = True,
     llm_client: LlmClient | None = None,
-    source_registry: SourceAdapterRegistry | None = None,
     quality_path: str | None = None,
     agentops_path: str | None = None,
     agent_runner: AgentRunner | None = None,
@@ -46,7 +44,6 @@ def create_app(
     service_container = build_services(
         database,
         llm_client=llm_client,
-        source_registry=source_registry,
         quality_path=resolved_quality_path,
         agentops_path=resolved_agentops_path,
         agent_runner=agent_runner,
@@ -54,7 +51,7 @@ def create_app(
     if bootstrap_users:
         service_container.auth.bootstrap_local_users()
 
-    app = FastAPI(title="OfferFlow API", version="5.1.0-rc1")
+    app = FastAPI(title="OfferFlow API", version="5.2.0")
     app.state.services = service_container
     app.add_middleware(
         SessionMiddleware,
@@ -89,7 +86,8 @@ def create_app(
     app.include_router(parsing.router)
     app.include_router(matching.router)
     app.include_router(suggestions.router)
-    app.include_router(sources.router)
+    app.include_router(resumes.router)
+    app.include_router(chats.router)
     app.include_router(agent.router)
     app.include_router(agentops.router)
 

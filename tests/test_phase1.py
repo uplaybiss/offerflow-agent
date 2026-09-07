@@ -61,7 +61,7 @@ class Phase1TestCase(unittest.TestCase):
         return response.json()
 
     def test_schema_has_phase1_tables_plus_phase4_agent_state_and_wal(self):
-        expected = {"users", "candidate_profiles", "jobs", "applications", "application_events", "interview_rounds", "job_search_tasks", "agent_memories", "pending_actions"}
+        expected = {"users", "candidate_profiles", "jobs", "applications", "application_events", "interview_rounds", "job_search_tasks", "agent_memories", "pending_actions", "resume_versions", "chat_threads", "chat_messages"}
         self.assertEqual(set(self.app.state.services.database.table_names()), expected)
         connection = sqlite3.connect(self.db_path)
         try:
@@ -288,9 +288,9 @@ class Phase1TestCase(unittest.TestCase):
     def test_frontend_keeps_phase1_views_after_phase5_agentops_addition(self):
         src = Path(__file__).resolve().parents[1] / "frontend" / "src"
         sidebar = (src / "components" / "AppSidebar.vue").read_text(encoding="utf-8")
-        for label in ("今日工作台", "岗位中心", "投递追踪", "候选人 360"):
+        for label in ("今日工作台", "岗位中心", "简历中心", "投递进度", "个人中心"):
             self.assertIn(label, sidebar)
-        self.assertEqual(sidebar.count("{ id: '"), 6)
+        self.assertEqual(sidebar.count("{ id: '"), 7)
         self.assertTrue(any(path.name == "CareerAgentView.vue" for path in src.rglob("*.vue")))
 
     def test_frontend_phase11_maintenance_and_valid_job_row_contracts(self):

@@ -12,7 +12,7 @@ from agent.context import current_agent_context
 from core.errors import ValidationError
 
 
-TOOLSET_VERSION = "career-tools-v1"
+TOOLSET_VERSION = "career-tools-v2"
 TOOL_RISKS = {
     "get_candidate_360": "READ_ONLY",
     "search_jobs": "READ_ONLY",
@@ -22,7 +22,9 @@ TOOL_RISKS = {
     "analyze_skill_gaps": "READ_ONLY",
     "query_applications": "READ_ONLY",
     "list_upcoming_tasks": "READ_ONLY",
+    "analyze_resume_for_job": "READ_ONLY",
     "propose_application_change": "CONTROLLED_WRITE",
+    "propose_task_change": "CONTROLLED_WRITE",
     "confirm_application_change": "CONFIRMATION_WRITE",
 }
 
@@ -34,7 +36,7 @@ def _trace_tool(name: str) -> Callable[[Callable[..., dict[str, Any]]], Callable
             context = current_agent_context()
             refs = {
                 key: kwargs[key]
-                for key in ("job_id", "job_ids", "application_id", "action_id", "expected_version", "target_status", "current_round_id", "action_type")
+                for key in ("job_id", "job_ids", "application_id", "action_id", "expected_version", "target_status", "current_round_id", "interview_round_id", "task_id", "action_type")
                 if key in kwargs
             }
             started, started_at = context.trace.tool_start(name, TOOL_RISKS[name], refs)
@@ -47,7 +49,7 @@ def _trace_tool(name: str) -> Callable[[Callable[..., dict[str, Any]]], Callable
                 )
                 raise
             output_refs = dict(refs)
-            output_refs.update({key: result[key] for key in ("action_id", "application_id", "from_status", "to_status", "resulting_version", "grade") if key in result})
+            output_refs.update({key: result[key] for key in ("action_id", "application_id", "task_id", "from_status", "to_status", "resulting_version", "grade") if key in result})
             blocked = bool(result.get("blocked"))
             context.trace.tool_end(
                 name, TOOL_RISKS[name], started, started_at,
@@ -131,6 +133,8 @@ def search_jobs(
         }
         for item in jobs[:50]
     ]
+    if len(items) == 1:
+        context.current_job_id = items[0]["job_id"]
     return {"items": items, "item_count": len(items)}
 
 
@@ -140,6 +144,7 @@ def get_job_detail(job_id: str) -> dict[str, Any]:
     """获取当前候选人的一个结构化岗位详情和来源信息。"""
     context = current_agent_context()
     job = context.services.jobs.get(context.candidate["candidate_id"], job_id)
+    context.current_job_id = job_id
     return {"job": {key: value for key, value in job.items() if key != "candidate_id"}, "job_id": job_id, "item_count": 1}
 
 
@@ -149,6 +154,7 @@ def analyze_job_match(job_id: str) -> dict[str, Any]:
     """用确定性 heuristic_v1 计算岗位硬条件、required/preferred skill coverage、等级和具体缺口。"""
     context = current_agent_context()
     result = context.services.matching.match_job(context.candidate, job_id)
+    context.current_job_id = job_id
     safe_result = {key: value for key, value in result.items() if key != "candidate"}
     return {
         "match": safe_result,
@@ -201,6 +207,9 @@ def query_applications(status: str = "", include_timeline: bool = False) -> dict
         items = [context.services.applications.get(candidate_id, item["application_id"]) for item in items[:50]]
     else:
         items = items[:50]
+    if len(items) == 1:
+        context.current_application_id = items[0]["application_id"]
+        context.current_job_id = items[0]["job_id"]
     return {"items": items, "item_count": len(items)}
 
 
@@ -223,7 +232,29 @@ def list_upcoming_tasks(days: int = 7, status: str = "") -> dict[str, Any]:
         due = datetime.fromisoformat(item["due_at"][:-1] + "+00:00" if item["due_at"].endswith("Z") else item["due_at"])
         if now <= due.astimezone(timezone.utc) <= limit:
             filtered.append(item)
+    if len(filtered) == 1:
+        context.current_task_id = filtered[0]["task_id"]
     return {"items": filtered[:50], "item_count": len(filtered[:50]), "days": days}
+
+
+@tool
+@_trace_tool("analyze_resume_for_job")
+def analyze_resume_for_job(job_id: str, resume_version_id: str = "") -> dict[str, Any]:
+    """基于候选人确认事实和已保存 JD 分析基础简历或指定版本，返回匹配、缺口和经校验的改写建议。"""
+    context = current_agent_context()
+    result = context.services.resumes.analyze(
+        context.candidate,
+        job_id,
+        resume_version_id=str(resume_version_id or ""),
+    )
+    context.current_job_id = job_id
+    return {
+        **result,
+        "job_id": job_id,
+        "matched_count": len(result["matched"]),
+        "missing_count": len(result["gaps"]),
+        "item_count": len(result["suggestions"]),
+    }
 
 
 @tool
@@ -284,6 +315,7 @@ def propose_application_change(
     else:
         raise ValidationError("action_type 必须是 APPLICATION_TRANSITION 或 INTERVIEW_PROGRESSION")
     action = result["action"]
+    context.current_application_id = application_id
     context.proposed_actions.append(action)
     return {
         "action_id": action["action_id"], "application_id": application_id,
@@ -291,6 +323,60 @@ def propose_application_change(
         "expected_version": expected_version, "requires_confirmation": True,
         "expires_at": action["expires_at"], "idempotent_replay": result["idempotent_replay"],
         "action_type": normalized_type,
+    }
+
+
+@tool
+@_trace_tool("propose_task_change")
+def propose_task_change(
+    title: str,
+    task_type: str,
+    due_at: str,
+    priority: str = "P2",
+    description: str = "",
+    job_id: str = "",
+    application_id: str = "",
+    interview_round_id: str = "",
+) -> dict[str, Any]:
+    """生成待办创建确认卡；due_at 必须是明确 ISO 时间，用户确认前不会写入 Task。"""
+    context = current_agent_context()
+    if context.sandbox:
+        return {
+            "sandbox": True,
+            "persisted": False,
+            "requires_confirmation": True,
+            "action_id": "SANDBOX-TASK-ACTION",
+            "action_type": "TASK_CREATE",
+            "title": title,
+            "due_at": due_at,
+        }
+    result = context.services.pending_actions.propose_task_create(
+        candidate_id=context.candidate["candidate_id"],
+        actor_username=context.actor_username,
+        chat_id=context.chat_id,
+        title=title,
+        task_type=task_type,
+        due_at=due_at,
+        priority=priority,
+        description=description,
+        job_id=job_id,
+        application_id=application_id,
+        interview_round_id=interview_round_id,
+    )
+    action = result["action"]
+    context.current_job_id = str(job_id or context.current_job_id)
+    context.current_application_id = str(application_id or context.current_application_id)
+    context.current_interview_id = str(interview_round_id or context.current_interview_id)
+    context.proposed_actions.append(action)
+    return {
+        "action_id": action["action_id"],
+        "action_type": "TASK_CREATE",
+        "task_id": "",
+        "title": action["payload"]["title"],
+        "due_at": action["payload"]["due_at"],
+        "requires_confirmation": True,
+        "expires_at": action["expires_at"],
+        "idempotent_replay": result["idempotent_replay"],
     }
 
 
@@ -343,7 +429,9 @@ CAREER_TOOLS = [
     analyze_skill_gaps,
     query_applications,
     list_upcoming_tasks,
+    analyze_resume_for_job,
     propose_application_change,
+    propose_task_change,
     confirm_application_change,
 ]
 

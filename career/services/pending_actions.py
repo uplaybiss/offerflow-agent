@@ -6,7 +6,13 @@ import os
 import secrets
 from typing import Any
 
-from career.models import ApplicationStatus, InterviewType, PendingActionStatus
+from career.models import (
+    ApplicationStatus,
+    InterviewType,
+    PendingActionStatus,
+    TaskPriority,
+    TaskType,
+)
 from career.repositories.pending_actions import PendingActionRepository
 from career.services.memory import validate_chat_id
 from core.database import json_dump
@@ -178,6 +184,63 @@ class PendingActionService:
             action_id=action_id,
             confirmation_grant=confirmation_grant,
         )
+
+    def propose_task_create(
+        self,
+        *,
+        candidate_id: str,
+        actor_username: str,
+        chat_id: str,
+        title: str,
+        task_type: str,
+        due_at: str,
+        priority: str = "P2",
+        description: str = "",
+        job_id: str = "",
+        application_id: str = "",
+        interview_round_id: str = "",
+    ) -> dict[str, Any]:
+        normalized_title = str(title or "").strip()
+        normalized_type = str(task_type or "GENERAL").upper()
+        normalized_priority = str(priority or "P2").upper()
+        if not normalized_title:
+            raise ValidationError("待办标题不能为空")
+        if normalized_type not in {item.value for item in TaskType}:
+            raise ValidationError("待办类型无效")
+        if normalized_priority not in {item.value for item in TaskPriority}:
+            raise ValidationError("待办优先级无效")
+        if not str(due_at or "").strip():
+            raise ValidationError("待办截止时间必须明确；使用默认时刻时也要在确认卡中展示")
+        try:
+            normalized_due_at = normalize_utc_datetime(str(due_at))
+        except ValueError:
+            raise ValidationError("待办截止时间必须是合法 ISO 时间") from None
+        payload = {
+            "title": normalized_title[:200],
+            "task_type": normalized_type,
+            "due_at": normalized_due_at,
+            "priority": normalized_priority,
+            "description": str(description or "")[:10_000],
+            "job_id": str(job_id or "").strip(),
+            "application_id": str(application_id or "").strip(),
+            "interview_round_id": str(interview_round_id or "").strip(),
+        }
+        request_hash = hashlib.sha256(
+            json_dump({"action_type": "TASK_CREATE", "payload": payload}).encode("utf-8")
+        ).hexdigest()
+        try:
+            ttl = max(60, min(int(os.getenv("PENDING_ACTION_TTL_SECONDS", "900")), 86_400))
+        except ValueError:
+            ttl = 900
+        action, replayed = self.repository.create_task(
+            candidate_id=candidate_id,
+            actor_username=actor_username,
+            chat_id=validate_chat_id(chat_id),
+            payload=payload,
+            request_hash=request_hash,
+            expires_at=self._expiry(ttl),
+        )
+        return {"action": action, "idempotent_replay": replayed}
 
     def confirm_from_frontend(self, *, candidate_id: str, actor_username: str, action_id: str) -> dict[str, Any]:
         return self.confirm_pending_action(

@@ -58,27 +58,53 @@ export type JobComparison = {
   items: Array<{ job: Job; match: MatchResult }>
 }
 
-export type SourceRefreshPreview = {
-  status: 'NOT_APPLICABLE' | 'UNAVAILABLE' | 'ERROR' | 'PREVIEW'
-  job_id: string; base_version: number; persisted: false; job_unchanged: true
-  adapter_key: string; update_preview: Partial<Job>; message: string; checked_at: string
-}
-
 export type AgentMemory = {
   memory_id: string; chat_id: string; current_job_id: string; current_application_id: string
   current_interview_id: string; current_task_id: string; last_user_goal: string; version: number
 }
 
 export type PendingAction = {
-  action_id: string; chat_id: string; action_type: 'APPLICATION_TRANSITION' | 'INTERVIEW_PROGRESSION'
+  action_id: string; chat_id: string; action_type: 'APPLICATION_TRANSITION' | 'INTERVIEW_PROGRESSION' | 'TASK_CREATE'
   payload: {
-    application_id: string; target_status?: string; expected_version?: number; next_action?: string; notes?: string
+    application_id?: string; target_status?: string; expected_version?: number; next_action?: string; notes?: string
     current_round_id?: string; current_round_result?: string; next_round_type?: string
     next_round_title?: string; next_round_scheduled_at?: string; task_title?: string; task_due_at?: string
     expected_application_version?: number; expected_interview_version?: number
+    title?: string; task_type?: string; due_at?: string; priority?: string; description?: string
+    job_id?: string; interview_round_id?: string
   }
   status: 'PENDING' | 'EXECUTED' | 'EXPIRED' | 'CANCELLED' | 'FAILED'
   expires_at: string; requires_confirmation: boolean; result: Record<string, unknown>; version: number
+}
+
+export type ChatThread = {
+  chat_id: string; title: string; archived: boolean; created_at: string; updated_at: string
+}
+
+export type ChatMessage = {
+  message_id: string; chat_id: string; role: 'USER' | 'ASSISTANT'; content: string; created_at: string
+}
+
+export type ResumeVersion = {
+  resume_version_id: string; source_job_id: string; title: string; base_resume_hash: string
+  content_text: string; structured: Record<string, unknown>; created_from: 'AI_TAILORED' | 'MANUAL'
+  archived: boolean; version: number; created_at: string; updated_at: string
+  job: { company_name: string; title: string }
+}
+
+export type ResumeSuggestion = {
+  section: string; change_type: string; original_text: string; suggested_text: string
+  reason: string; evidence: string; jd_requirement: string
+  validation_status: 'SUPPORTED' | 'NEEDS_USER_REVIEW' | 'UNSUPPORTED'
+  validation_reasons: string[]; safe_to_apply: boolean
+}
+
+export type ResumeAnalysis = {
+  job: { job_id: string; company_name: string; title: string }
+  resume_source: { type: string; resume_version_id: string; title: string }
+  core_requirements: string[]; matched: string[]; underemphasized_facts: string[]; gaps: string[]
+  suggestions: ResumeSuggestion[]; base_resume_hash: string; preview_only: true
+  base_resume_unchanged: true; validation_disclosure: string
 }
 
 export type AgentTrace = {

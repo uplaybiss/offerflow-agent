@@ -19,6 +19,7 @@ ROOT = Path(__file__).resolve().parents[1]
 EXPECTED_BUSINESS_TABLES = {
     "users", "candidate_profiles", "jobs", "applications", "application_events",
     "interview_rounds", "job_search_tasks", "agent_memories", "pending_actions",
+    "resume_versions", "chat_threads", "chat_messages",
 }
 EXPECTED_QUALITY_TABLES = {
     "agent_runs", "trace_events", "eval_runs", "eval_case_results", "eval_baselines",
@@ -26,7 +27,7 @@ EXPECTED_QUALITY_TABLES = {
 EXPECTED_AGENTOPS_TABLES = {
     "agent_config_versions", "agent_release_state", "agent_release_audit", "agentops_commands",
 }
-DEFERRED_MODELS = {"resume_versions", "candidate_skills"}
+DEFERRED_MODELS = {"candidate_skills"}
 
 
 def main() -> None:
@@ -50,7 +51,7 @@ def main() -> None:
     if agentops_tables != EXPECTED_AGENTOPS_TABLES:
         raise SystemExit(f"unexpected AgentOps tables: {sorted(agentops_tables)}")
 
-    active_roots = ("core", "career", "api", "parsing", "matching", "sources", "agent", "quality", "agentops")
+    active_roots = ("core", "career", "api", "parsing", "matching", "agent", "quality", "agentops")
     source = "\n".join(
         path.read_text(encoding="utf-8", errors="ignore").lower()
         for name in active_roots
@@ -63,7 +64,14 @@ def main() -> None:
     if residues:
         raise SystemExit(f"deferred table residue: {residues}")
     if (ROOT / "rag").exists():
-        raise SystemExit("deferred RAG directory appeared in Phase 5")
+        raise SystemExit("deferred RAG directory appeared in v5.2")
+    removed_source_modules = (
+        ROOT / "sources" / "adapters.py",
+        ROOT / "career" / "services" / "sources.py",
+        ROOT / "api" / "routers" / "sources.py",
+    )
+    if any(path.exists() for path in removed_source_modules):
+        raise SystemExit("online job-source adapter modules must stay removed")
 
     required_files = (
         ROOT / "agent" / "context.py",
@@ -75,7 +83,15 @@ def main() -> None:
         ROOT / "quality" / "eval.py",
         ROOT / "career" / "repositories" / "memory.py",
         ROOT / "career" / "repositories" / "pending_actions.py",
+        ROOT / "career" / "repositories" / "resumes.py",
+        ROOT / "career" / "repositories" / "chats.py",
+        ROOT / "career" / "services" / "resumes.py",
+        ROOT / "career" / "services" / "chats.py",
+        ROOT / "api" / "routers" / "resumes.py",
+        ROOT / "api" / "routers" / "chats.py",
         ROOT / "frontend" / "src" / "views" / "CareerAgentView.vue",
+        ROOT / "frontend" / "src" / "views" / "ResumeCenterView.vue",
+        ROOT / "frontend" / "src" / "uiLabels.ts",
         ROOT / "agentops" / "store.py",
         ROOT / "agentops" / "service.py",
         ROOT / "quality" / "management.py",
@@ -88,6 +104,7 @@ def main() -> None:
         ROOT / "scripts" / "run_phase5_acceptance.py",
         ROOT / "scripts" / "run_phase5_live_agent_smoke.py",
         ROOT / "scripts" / "run_final_hardening_acceptance.py",
+        ROOT / "scripts" / "run_v52_real_usage_acceptance.py",
         ROOT / "OfferFlow Final Hardening 报告.md",
     )
     missing = [str(path.relative_to(ROOT)) for path in required_files if not path.exists()]
@@ -97,10 +114,11 @@ def main() -> None:
     expected_tools = {
         "get_candidate_360", "search_jobs", "get_job_detail", "analyze_job_match", "compare_jobs",
         "analyze_skill_gaps", "query_applications", "list_upcoming_tasks",
-        "propose_application_change", "confirm_application_change",
+        "analyze_resume_for_job", "propose_application_change", "propose_task_change",
+        "confirm_application_change",
     }
-    if len(CAREER_TOOLS) != 10 or {item.name for item in CAREER_TOOLS} != expected_tools:
-        raise SystemExit("Career Agent must expose the confirmed 10-tool catalog")
+    if len(CAREER_TOOLS) != 12 or {item.name for item in CAREER_TOOLS} != expected_tools:
+        raise SystemExit("Career Agent must expose the confirmed v5.2 12-tool catalog")
     if any("candidate_id" in item.args for item in CAREER_TOOLS):
         raise SystemExit("Career Agent tool schemas must not accept candidate_id")
     if len(FIXED_CASES) != 8:
@@ -109,7 +127,7 @@ def main() -> None:
         raise SystemExit("Agent Contract / Safety suite must contain 8 scripted cases")
 
     pending_source = (ROOT / "career" / "repositories" / "pending_actions.py").read_text(encoding="utf-8")
-    if not all(term in pending_source for term in ("transaction()", "AGENT_STATUS_CHANGED", "INTERVIEW_PROGRESSED", "INTERVIEW_PROGRESSION", "confirmation_grant_hash", "expected_version")):
+    if not all(term in pending_source for term in ("transaction()", "AGENT_STATUS_CHANGED", "INTERVIEW_PROGRESSED", "INTERVIEW_PROGRESSION", "TASK_CREATE", "confirmation_grant_hash", "expected_version")):
         raise SystemExit("atomic confirmation / CAS contract missing")
     trace_source = (ROOT / "quality" / "trace.py").read_text(encoding="utf-8")
     if not all(term in trace_source for term in ("ALLOWED_BUSINESS_REF_KEYS", "ALLOWED_METRIC_KEYS", "opaque_ref")):
@@ -125,10 +143,11 @@ def main() -> None:
     if not dist.exists():
         raise SystemExit("frontend production build missing")
     sidebar = (ROOT / "frontend" / "src" / "components" / "AppSidebar.vue").read_text(encoding="utf-8")
-    if sidebar.count("{ id: '") != 6 or "Career Agent" not in sidebar or "AgentOps" not in sidebar:
-        raise SystemExit("Phase 5 must expose six main pages including admin AgentOps")
+    expected_user_pages = ("今日工作台", "岗位中心", "简历中心", "投递进度", "个人中心", "求职 Agent")
+    if sidebar.count("{ id: '") != 7 or not all(label in sidebar for label in expected_user_pages) or "AgentOps" not in sidebar:
+        raise SystemExit("v5.2 must expose six user pages plus admin-only AgentOps")
     agent_view = (ROOT / "frontend" / "src" / "views" / "CareerAgentView.vue").read_text(encoding="utf-8")
-    if not all(term in agent_view for term in ("/api/agent/chat/stream", "/confirm", "待确认动作", "Trace 摘要")):
+    if not all(term in agent_view for term in ("/api/agent/chat/stream", "/api/chat-threads", "/confirm", "待你确认", "最近对话")):
         raise SystemExit("Career Agent page is not fully wired")
     agentops_view = (ROOT / "frontend" / "src" / "views" / "AgentOpsView.vue").read_text(encoding="utf-8")
     if not all(term in agentops_view for term in ("generation CAS", "发布灰度", "回滚到此", "Agent Contract / Safety Eval", "Tool Whitelist", "Trace 时间线")):
@@ -136,10 +155,10 @@ def main() -> None:
 
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
     required_disclosures = (
-        "面向个人秋招流程的本地单用户/轻量多账号 Agent 工作台",
-        "deterministic matching", "confirmation write", "大规模官网抓取",
-        "自动投递", "多 Agent", "RAG", "分布式服务",
-        "生产级 IAM / Config Center / Observability", "Release Candidate",
+        "# 第一次使用 OfferFlow", "AI 求职投递与简历优化工作台",
+        "deterministic matching", "confirmation write", "实时联网搜索岗位",
+        "自动投递", "多 Agent", "RAG", "分布式服务", "ResumeVersion",
+        "聊天记录", "AgentMemory", "Trace",
     )
     if not all(term in readme for term in required_disclosures):
         raise SystemExit("README release-candidate scope disclosure is incomplete")
@@ -151,8 +170,8 @@ def main() -> None:
     if forbidden_automation:
         raise SystemExit(f"forbidden crawler/browser dependencies: {forbidden_automation}")
 
-    print("OFFERFLOW RELEASE CANDIDATE CHECK: PASS")
-    print("  9 business tables; 5 quality tables; 4 AgentOps tables; 10 tools; immutable whitelist; atomic progression; 8 business regressions + 8 scripted contract cases; 6 pages")
+    print("OFFERFLOW V5.2 RELEASE CHECK: PASS")
+    print("  12 business tables; 5 quality tables; 4 AgentOps tables; 12 tools; immutable whitelist; atomic confirmation; 8 business regressions + 8 scripted contract cases; 6 user pages + admin AgentOps")
 
 
 if __name__ == "__main__":
