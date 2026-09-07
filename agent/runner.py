@@ -14,7 +14,7 @@ from agent.tools import CAREER_TOOL_CATALOG, CAREER_TOOL_NAMES
 from core.errors import ExternalServiceError
 
 
-PROMPT_VERSION = "career-agent-prompt-v2"
+PROMPT_VERSION = "career-agent-prompt-v3"
 
 
 @dataclass
@@ -57,11 +57,15 @@ class LangChainCareerAgentRunner:
 
     def _graph_for(self, settings: dict[str, Any]) -> Any:
         enabled_tools = self._enabled_tool_names(settings)
+        skill_name = str(settings.get("_active_skill") or "")
+        skill_prompt = str(settings.get("_skill_prompt") or "").strip()
         effective = {
             "model_name": str(settings.get("model_name") or self.model_name),
             "max_retries": max(0, min(int(settings.get("max_retries", self.max_retries)), 5)),
             "temperature": max(0.0, min(float(settings.get("temperature", 0)), 1.0)),
             "enabled_tools": enabled_tools,
+            "active_skill": skill_name,
+            "skill_prompt_sha256": hashlib.sha256(skill_prompt.encode("utf-8")).hexdigest(),
         }
         cache_key = hashlib.sha256(
             json.dumps(effective, sort_keys=True, separators=(",", ":")).encode("utf-8")
@@ -77,10 +81,13 @@ class LangChainCareerAgentRunner:
                 max_retries=effective["max_retries"],
                 extra_body={"enable_thinking": False},
             )
+            system_prompt = self._prompt
+            if skill_prompt:
+                system_prompt += f"\n\n当前请求激活静态 Skill /{skill_name}：\n{skill_prompt}"
             graph = create_agent(
                 model=model,
                 tools=[CAREER_TOOL_CATALOG[name] for name in enabled_tools],
-                system_prompt=self._prompt,
+                system_prompt=system_prompt,
             )
             self._graphs[cache_key] = graph
         return graph

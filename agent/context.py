@@ -17,6 +17,7 @@ class AgentRequestContext:
     current_application_id: str = ""
     current_interview_id: str = ""
     current_task_id: str = ""
+    active_skill: str = ""
     sandbox: bool = False
     confirmation_grant: str = ""
     proposed_actions: list[dict[str, Any]] = field(default_factory=list)

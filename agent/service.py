@@ -6,6 +6,7 @@ from typing import Any
 
 from agent.context import AgentRequestContext, bind_agent_context
 from agent.runner import AgentRunner, LangChainCareerAgentRunner, PROMPT_VERSION
+from agent.skills import route_skill, scoped_tools
 from agent.tools import TOOLSET_VERSION, confirm_application_change, enabled_tools_sha256
 from career.services.memory import validate_chat_id
 from core.errors import ExternalServiceError, OfferFlowError, ValidationError
@@ -97,6 +98,7 @@ class CareerAgentService:
             raise ValidationError("message 不能为空")
         if len(message) > 20_000:
             raise ValidationError("message 不能超过 20000 字符")
+        activation = route_skill(message)
         chat_id = validate_chat_id(payload.get("chat_id"))
         if not self.runner.available and not sandbox:
             raise ExternalServiceError("Career Agent 未配置可用的 DASHSCOPE_API_KEY；其他页面仍可正常使用")
@@ -108,7 +110,14 @@ class CareerAgentService:
             candidate["candidate_id"], chat_id, history_limit
         )
         history_used = min(len(history), history_limit)
-        enabled_tools = [str(item) for item in settings["enabled_tools"]]
+        configured_tools = [str(item) for item in settings["enabled_tools"]]
+        enabled_tools = scoped_tools(configured_tools, activation)
+        runner_settings = {
+            **settings,
+            "enabled_tools": enabled_tools,
+            "_active_skill": activation.skill.name if activation else "",
+            "_skill_prompt": activation.instructions if activation else "",
+        }
         whitelist_hash = enabled_tools_sha256(enabled_tools)
         selected = self._safe_refs(candidate["candidate_id"], payload)
         self.services.chats.append(candidate["candidate_id"], chat_id, "USER", message)
@@ -134,13 +143,14 @@ class CareerAgentService:
         context = AgentRequestContext(
             services=self.services, candidate=candidate, actor_username=actor_username,
             chat_id=chat_id, trace=trace, sandbox=sandbox, **selected,
+            active_skill=activation.skill.name if activation else "",
         )
         try:
             with bind_agent_context(context):
                 output = self.runner.run(
-                    message=message,
+                    message=activation.message if activation else message,
                     history=history,
-                    runtime_config=settings,
+                    runtime_config=runner_settings,
                 )
             trace.mark_first_chunk()
             self.services.chats.append(
@@ -185,6 +195,7 @@ class CareerAgentService:
                 "enabled_tool_count": len(enabled_tools),
                 "history_messages": history_limit,
                 "history_messages_used": history_used,
+                "active_skill": activation.skill.command if activation else "",
             },
         }
 
