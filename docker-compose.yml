@@ -1,0 +1,21 @@
+services:
+  offerflow:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      OFFERFLOW_DB_PATH: /data/offerflow.db
+      OFFERFLOW_QUALITY_DB_PATH: /data/quality.db
+      OFFERFLOW_AGENTOPS_DB_PATH: /data/agentops.db
+      APP_TIMEZONE: ${APP_TIMEZONE:-Asia/Shanghai}
+      SESSION_SECRET: ${SESSION_SECRET:-local-compose-change-me}
+      DASHSCOPE_API_KEY: ${DASHSCOPE_API_KEY:-}
+      DASHSCOPE_BASE_URL: ${DASHSCOPE_BASE_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1}
+      CHAT_MODEL_NAME: ${CHAT_MODEL_NAME:-qwen3-max}
+      AGENT_MODEL_MAX_RETRIES: ${AGENT_MODEL_MAX_RETRIES:-2}
+      AGENT_HISTORY_MESSAGES: ${AGENT_HISTORY_MESSAGES:-12}
+    volumes:
+      - offerflow-data:/data
+
+volumes:
+  offerflow-data:

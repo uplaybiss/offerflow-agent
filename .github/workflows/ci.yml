@@ -1,0 +1,22 @@
+name: phase5-ci
+on:
+  push:
+  pull_request:
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.13' }
+      - uses: pnpm/action-setup@v4
+        with: { version: 10 }
+      - uses: actions/setup-node@v4
+        with: { node-version: '22', cache: pnpm, cache-dependency-path: frontend/pnpm-lock.yaml }
+      - run: pip install -r requirements.txt
+      - run: pytest -q
+      - run: python scripts/run_phase5_acceptance.py
+      - run: pnpm --dir frontend install --frozen-lockfile
+      - run: pnpm --dir frontend exec vue-tsc --noEmit
+      - run: pnpm --dir frontend build
+      - run: python scripts/release_check.py
